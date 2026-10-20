@@ -1,10 +1,15 @@
 # Offline VM planner
 
 This independent module provides validation and a reviewable JSON plan for the
-future installer. It can be integrated with the unpublished implementation later.
-It does not connect to TrueNAS, execute commands, download images, write files,
-create storage, or start VMs. There is no apply flag. Run it on any development
-machine with Python 3.9 or newer; no third-party packages are required.
+future installer. The `preview.py` planner is offline-only: it reads only files
+you explicitly pass, makes no middleware calls, and does not write files, create
+storage, or start VMs. There is no apply flag. Run it on any development machine
+with Python 3.9 or newer; no third-party packages are required.
+
+A separate `capture_schema.py` helper is provided for an operator to run from an
+authenticated TrueNAS host shell. It makes only the read-only `system.version`
+and `core.get_methods` middleware calls and writes selected method metadata to a
+new private file under `/tmp`. It does not install a VM or validate any write.
 
 ## Try it
 
@@ -16,10 +21,25 @@ python3 planning/preview.py --config planning/examples/vm.json --inventory plann
 python3 -m unittest discover -s planning -p 'test_*.py' -v
 ```
 
+For the separately authorized local schema snapshot, run this from the TrueNAS
+host shell (not from an ordinary development machine):
+
+```sh
+expected_build=$(midclt call system.version)
+python3 planning/capture_schema.py --expected-version "$expected_build"
+```
+
+The helper aborts before querying schemas if `system.version` is not an exact
+match. It writes a new mode-0600 JSON file under `/tmp`, refuses to overwrite,
+and lists any requested methods missing from the running middleware. Copy the
+capture out through an existing trusted channel for review; **do not commit it**.
+Running the helper is read-only, but the resulting schema is not proof that any
+VM request will be accepted or that a guest can boot.
+
 The examples are fictional. Copy and edit them locally rather than committing
-your host's inventory. The command reads only the files you explicitly supply
-and prints the plan to stdout. Invalid input produces an error on stderr and
-exit status 2; a successful preview returns 0. Success is not permission to install.
+your host's inventory. The preview command reads only the files you explicitly
+supply and prints the plan to stdout. Invalid input produces an error on stderr
+and exit status 2; a successful preview returns 0. Success is not permission to install.
 
 ## Config format
 

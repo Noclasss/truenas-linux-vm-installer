@@ -20,19 +20,19 @@
 
 1. **Repository recovery baseline (this commit):** record the verified scope, constraints, and evidence gaps in version control.
 2. **Research the first profile:** select a pinned Ubuntu Server artifact and a provisioning route; document checksum/signature verification, boot requirements, seed delivery, and first-boot success criteria.
-3. **Read-only compatibility layer:** use local `midclt` for host-side operations; detect build/version, enumerate supported methods, pools, capacity, VM state, and NIC choices. Fail closed when required data or schemas are unknown.
+3. **Read-only compatibility layer:** a local `midclt` schema-capture helper now records only selected method definitions to a private, no-overwrite file under `/tmp`, with an exact-version guard. It has mocked tests but has not run on TrueNAS because `midclt` is unavailable in this development environment. Next, inspect that capture and implement build/version detection, pools, capacity, VM state, and NIC choices; fail closed when required data or schemas are unknown.
 4. **Plan and preview:** validate inputs and show a complete resource plan without downloading or writing anything. Add tests asserting preview makes zero write calls.
 5. **Mocked install orchestration:** implement Ubuntu Server only behind an empty-by-default live-profile allowlist, explicit user confirmation, exclusive manifest creation, and exact ownership checks. Test failures, timeouts, and ambiguous writes without TrueNAS.
-6. **CI and publication:** add unit tests, Python compile, shell syntax, secret scan, and diff checks to a workflow; verify workflow-file authorization before publishing it. Push only the feature branch and verify its SHA before considering a draft PR.
+6. **CI and publication:** the existing planner workflow now discovers the mocked schema-capture tests. Extend it as installer tests are added; verify workflow-file authorization before future workflow edits. Push only the feature branch and verify its SHA before updating the draft PR.
 7. **Disposable live validation:** only after separate approval and safe isolation/capacity checks, validate Ubuntu Server boot, console, first-boot provisioning, networking, and access. Do not use production credentials.
 8. **Expand profiles one at a time:** add Ubuntu Desktop, Debian Server, then Debian Desktop only after each has a distinct verified artifact/provisioning path and independent tests. Keep all experimental until disposable boot and first-boot evidence exists.
 
 ## Evidence gaps / blockers
 
-- The previous local implementation and its commit objects are not present in this environment. Only the README can be recovered from GitHub; rebuilding must not be represented as restoring the lost work.
-- The actual TrueNAS versioned VM method contracts have not been captured for the target build. General API references are research leads, not live schema validation.
+- The prior live-installer implementation and its local-only commits could not be recovered. The current remote offline planner is preserved; this schema-capture helper is new recovery work, not a restoration of the missing installer.
+- The exact TrueNAS versioned VM method contracts have not been captured on the target host. The helper's tests are mocked; `midclt` is unavailable in this development environment, so no runtime schema capture has occurred.
 - No profile has been boot-tested in a disposable VM from this repository.
-- GitHub authorization previously reported no `workflow` scope. Do not create a replacement credential. Reauthorize the existing integration with workflow-file permission before publishing `.github/workflows/ci.yml`.
+- `.github/workflows/planner-tests.yml` currently tests the offline planner and mocked schema-capture tests. The previously inspected credential lacked `workflow` scope; this change does not edit the workflow. Reauthorize the existing integration before any future workflow-file change if needed; do not create a replacement credential.
 
 ## Official references
 
