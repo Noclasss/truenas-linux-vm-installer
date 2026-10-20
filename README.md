@@ -4,18 +4,20 @@ A standalone project for fast deployment of new Linux Server and Desktop virtual
 
 ## Status
 
-**In development. No installer is released yet.** This repository was intentionally separated from the Home Assistant OS installer so Linux distributions and installation workflows can be designed without affecting HAOS.
+**Planning only. No installer is released or implemented in this repository yet.** The repository currently contains project documentation only. Do not run an install command based on this project.
+
+This project is separate from the Home Assistant OS installer so Linux distributions and installation workflows can be designed without affecting HAOS.
 
 ## Initial target
 
-The first planned profiles are:
+The planned profiles are:
 
 - Ubuntu Server
 - Ubuntu Desktop
 - Debian Server
 - Debian Desktop
 
-The project will add profiles in stages. Each image and edition needs its own verified source, provisioning method, boot configuration, resource defaults, and tests; a profile will not be labelled ready just because another distro works.
+All profiles are experimental until each has passed automated tests and disposable VM boot and first-boot checks on supported TrueNAS versions. Each image and edition needs its own verified source, provisioning method, boot configuration, resource defaults, and tests; a profile will not be labelled ready just because another distro works.
 
 ## Safety goals
 
@@ -27,8 +29,8 @@ The project will add profiles in stages. Each image and edition needs its own ve
 - Leave new VMs powered off unless starting is explicitly requested.
 - Keep install manifests so failed runs can be reconciled safely.
 
-No live Linux VM has been created by this repository yet. Mocked tests, TrueNAS schema checks, preview checks, and live-install verification will be reported separately rather than conflated.
+No live Linux VM has been created or validated by this repository. Mocked tests, TrueNAS schema checks, preview checks, and live-install verification must be reported separately rather than conflated.
 
 ## Development
 
-Implementation is being prepared on a feature branch. Use the pull request and its test results to track what is actually implemented and supported.
+Implementation work belongs on a feature branch and should be reviewed in an unmerged pull request. Do not treat the project as usable until installer code, tests, and supported-version documentation are published and reviewed.
