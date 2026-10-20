@@ -4,7 +4,7 @@ A standalone project for fast deployment of new Linux Server and Desktop virtual
 
 ## Status
 
-**Planning only. No installer is released or implemented in this repository yet.** The repository currently contains project documentation only. Do not run an install command based on this project.
+**Experimental offline planner only; no live installer is released.** The `planning/` module validates settings and produces a JSON preview. It cannot create or start a VM.
 
 This project is separate from the Home Assistant OS installer so Linux distributions and installation workflows can be designed without affecting HAOS.
 
@@ -30,6 +30,15 @@ All profiles are experimental until each has passed automated tests and disposab
 - Keep install manifests so failed runs can be reconciled safely.
 
 No live Linux VM has been created or validated by this repository. Mocked tests, TrueNAS schema checks, preview checks, and live-install verification must be reported separately rather than conflated.
+
+## Try the offline preview
+
+```sh
+python3 planning/preview.py --config planning/examples/vm.json
+```
+
+See [planner documentation](planning/README.md) for inventory checks, examples,
+tests and limitations. Preview success does not establish live compatibility.
 
 ## Development
 
