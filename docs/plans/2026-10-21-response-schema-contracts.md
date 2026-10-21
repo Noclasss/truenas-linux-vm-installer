@@ -12,7 +12,7 @@
 
 ## Safety boundaries
 
-- Work only on `feat/multi-distro-installer`; never push to `main`, merge, or deploy.
+- The original PR #2 work targeted `feat/multi-distro-installer`; its later preflight/schema follow-up is stacked separately on `fix/readonly-preflight-memory-units` as PR #3. Never push to `main`, merge, or deploy.
 - Do not connect to TrueNAS or run any middleware method during implementation or tests.
 - Use only schema definitions from the local operator-provided capture; never copy runtime inventory, credentials, private paths, or the raw capture into Git.
 - Keep `LIVE_PROFILE_ALLOWLIST` empty and all distro profiles experimental.
@@ -41,7 +41,7 @@
 
 **Files:** `planning/fixtures/truenas-26.0.0-beta.2-method-contracts.json`, `planning/test_compatibility.py`.
 
-1. Extract return-schema definitions for the exact 19 already-selected methods from `/opt/data/cache/documents/doc_011850ba4845_truenas-methods.json`.
+1. Extract return-schema definitions for the exact 19 already-selected methods from the operator's private, uncommitted capture; do not copy that capture into the repository.
 2. Retain only schema constraints needed for stable comparison; remove descriptions, examples, and unrelated descriptive metadata. Preserve request schemas unchanged.
 3. Do not copy host values or commit the raw capture.
 4. Add fixture tests for method count, format, and required return contracts.
@@ -54,5 +54,9 @@
 1. State that the read-only probe compares request and return schemas but invokes only `system.version` and `core.get_methods`.
 2. State that this improves contract review only; live method behavior, write acceptance, and VM boot remain unverified.
 3. Run the complete unit suite, compilation, static preview, limited secret/private-IP scan, and `git diff --check`; inspect the full intended diff.
-4. Commit and push only the feature branch if checks pass. Read back the feature SHA and exact-head Actions runs; confirm `main` is unchanged and PR #2 remains draft/open/unmerged.
+4. For the original PR #2 delivery, commit and push only the feature branch if checks pass. Read back its SHA and exact-head Actions runs; confirm `main` is unchanged and PR #2 remains draft/open/unmerged. The subsequent PR #3 follow-up remains on its separately named fix branch.
 5. Do not close issue #1 or mark any profile supported.
+
+## Completion status (2026-10-21)
+
+The initial plan covered 19 selected methods. The sanitized fixture was later extended with `vm.device.convert` as method 20, and the operator reran the exact-build read-only comparison from commit `1b10b439f9bf2d10ff1afa0da228b30416043bc9`. All 20 request/return contracts matched for `TrueNAS-26.0.0-BETA.2`; only `system.version` and `core.get_methods` were called. The original 19-method steps above describe the plan's starting scope, not the final fixture or evidence. PR #3 carries the follow-up on `fix/readonly-preflight-memory-units`, stacked on PR #2's `feat/multi-distro-installer` branch. This remains schema evidence only; no write acceptance, live preflight, VM creation, or boot is claimed.

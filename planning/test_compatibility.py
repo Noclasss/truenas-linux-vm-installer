@@ -33,8 +33,8 @@ class CapturedSchemaTests(unittest.TestCase):
 
     def test_fixture_is_minimized_to_all_selected_method_contracts(self):
         self.assertEqual(self.fixture["truenas_version"], "TrueNAS-26.0.0-BETA.2")
-        self.assertEqual(self.fixture["method_count"], 19)
-        self.assertEqual(len(self.methods), 19)
+        self.assertEqual(self.fixture["method_count"], 20)
+        self.assertEqual(len(self.methods), 20)
         self.assertNotIn("available_method_count", self.fixture)
         self.assertTrue(all(
             set(metadata) <= {"accepts", "returns", "$defs", "definitions"}
@@ -87,11 +87,25 @@ class CapturedSchemaTests(unittest.TestCase):
         with self.assertRaises(SchemaError):
             validate_method_request(self.methods, "vm.start", ["not-an-id", {"overcommit": False}])
 
+    def test_vm_device_convert_request_matches_exact_beta2_contract(self):
+        valid = [{
+            "source": "synthetic-source",
+            "destination": "synthetic-destination",
+        }]
+        validate_method_request(self.methods, "vm.device.convert", valid)
+        for invalid in (
+            [{"source": "synthetic-source"}],
+            [{"source": "", "destination": "synthetic-destination"}],
+            [{"source": "synthetic-source", "destination": "synthetic-destination", "format": "raw"}],
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(SchemaError):
+                validate_method_request(self.methods, "vm.device.convert", invalid)
+
     def test_read_only_probe_checks_exact_version_and_all_method_schemas(self):
         client = FakeReadOnlyClient(self.fixture["truenas_version"], self.methods)
         report = compatibility.verify_runtime_compatibility(client, self.fixture)
         self.assertEqual(report.truenas_version, self.fixture["truenas_version"])
-        self.assertEqual(len(report.checked_methods), 19)
+        self.assertEqual(len(report.checked_methods), 20)
         self.assertEqual(client.calls, ["system.version", "core.get_methods"])
 
     def test_build_mismatch_aborts_before_method_schema_query(self):

@@ -29,7 +29,15 @@ All profiles are experimental until each has passed automated tests and disposab
 - Leave new VMs powered off unless starting is explicitly requested.
 - Keep install manifests so failed runs can be reconciled safely.
 
-No live Linux VM has been created or validated by this repository. An operator-provided report dated 2026-10-21 records that the read-only compatibility probe matched all 19 selected request and return schema contracts on `TrueNAS-26.0.0-BETA.2`, using only `system.version` and `core.get_methods`; no write methods were called. This result applies only to that exact build. Schema matching does not establish write acceptance, actual runtime response data, guest boot, or first-boot behavior.
+No live Linux VM has been created or validated by this repository. Operator-provided read-only compatibility output for commit `1b10b439f9bf2d10ff1afa0da228b30416043bc9` records a match for all 20 selected request/return schema contracts on `TrueNAS-26.0.0-BETA.2`, using only `system.version` and `core.get_methods`; no write methods were called. This result applies only to that exact build and fixture. Schema matching does not establish write acceptance, actual runtime response data, guest boot, or first-boot behavior.
+
+## Review status (2026-10-21)
+
+- PR #2 is the open, draft, unmerged `feat/multi-distro-installer` branch targeting `main`; its current head is `62d786c939b97fb3b425a662632ce29e422604ce`. The latest hosted Actions runs on that head, [39648144793](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39648144793) and [39648137214](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39648137214), succeeded. The latest code-bearing run, [39622916219](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39622916219), reported 116 tests passed; the current head has the same Git tree as that tested code commit.
+- PR #3 is a separate stacked, open, draft, unmerged `fix/readonly-preflight-memory-units` branch targeting `feat/multi-distro-installer`; its last verified published head before this documentation update was `76289eb3f5d6829127cb7e793b312c9b20a298ce`. Its latest verified hosted Actions run, [39644757734](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39644757734), succeeded. The local suite on this branch passed 138 tests; compilation and CLI help checks passed. No hosted log-derived test count was available for that run.
+- `main` remains at `88ef8195da992904dc24f7cfe49a717502b3e95f`. The Beta.2 fixture has 19 contracts on PR #2 and 20 on stacked PR #3; the operator reran the read-only comparison after the 20th contract was added and reported all 20 matched.
+
+These statuses are evidence about code, schemas, and CI only. No live TrueNAS preflight, write acceptance, VM creation, or boot validation is claimed; all four profiles remain experimental.
 
 ## Try the offline preview
 

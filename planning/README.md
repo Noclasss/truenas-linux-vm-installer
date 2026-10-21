@@ -46,7 +46,7 @@ The first profile is pinned to Canonical's latest dated Ubuntu 26.04 LTS release
 
 Provisioning uses cloud-init's NoCloud datasource: `user-data` plus `meta-data` on CIDATA-labeled ISO media created with `cloud-localds`; the seed metadata sets `dsmode: local` so the datasource does not depend on guest networking. The seed helper accepts validated OpenSSH public keys only, locks the created account's password, disables SSH password authentication and root login, and never accepts private keys or passwords. It invokes `cloud-localds` without a shell, stages seed files in a mode-0700 directory, uses mode-0600 files, bounds execution time, and refuses output overwrite. A real local seed build succeeded using Debian tools extracted only into private scratch (no system packages installed); `isoinfo` reported volume ID `cidata` and both NoCloud files. The key used was a synthetic, nonfunctional test value, not a login credential. No TrueNAS device was created and no guest consumed the ISO. Future host preflight must verify required utilities are present; it must not install packages automatically.
 
-The sanitized `TrueNAS-26.0.0-BETA.2` request-schema fixture includes a `CDROM` device variant with a `path` property. That is accepted-request-schema evidence only; it does not establish write acceptance, boot order, successful ISO attachment, or guest behavior. All four distro profiles remain experimental; no live installer, TrueNAS writes, VM boot, console, network, or first-boot validation has occurred.
+The sanitized `TrueNAS-26.0.0-BETA.2` fixture includes a `CDROM` device variant with a `path` property and 20 selected request/return method contracts. The operator first compared the 19-contract fixture, then reran the read-only compatibility probe from commit `1b10b439f9bf2d10ff1afa0da228b30416043bc9` after `vm.device.convert` was added; all 20 contracts matched. Only `system.version` and `core.get_methods` were called, and no write method was invoked. Thus “19” refers to the earlier fixture/check; the final operator evidence covers 20. This does not establish write acceptance, boot order, successful ISO attachment, image conversion, or guest behavior. All four profiles remain experimental; no live installer, TrueNAS writes, VM boot, console, network, or first-boot validation has occurred.
 
 Official references: [Ubuntu cloud images](https://cloud-images.ubuntu.com/releases/server/26.04/release-20261016/), [Ubuntu cloud-image signature verification](https://ubuntu.com/docs/public-images/public-images-how-to/verify-image-checksum/), [cloud-init NoCloud datasource](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html), and [Canonical cloud-utils](https://github.com/canonical/cloud-utils/blob/main/bin/cloud-localds).
 
@@ -68,9 +68,9 @@ VM request will be accepted or that a guest can boot.
 
 An operator-provided capture for `TrueNAS-26.0.0-BETA.2` was reduced to a
 sanitized fixture at `fixtures/truenas-26.0.0-beta.2-method-contracts.json`.
-It contains normalized accepted-request and return-schema constraints for the 19
-selected methods; descriptions, examples, defaults, and other descriptive
-metadata are omitted. The raw capture is not in the repository. The bounded
+It now contains normalized accepted-request and return-schema constraints for 20
+selected methods, including `vm.device.convert`; descriptive metadata is omitted
+from the schema fixture. The raw capture is not in the repository. The bounded
 validator rejects unsupported schema assertions instead of silently ignoring them.
 
 On a host running that exact build, this optional probe re-reads only
@@ -80,13 +80,13 @@ On a host running that exact build, this optional probe re-reads only
 python3 planning/verify_compatibility.py
 ```
 
-A build mismatch stops before querying method schemas.
-An operator-provided report dated 2026-10-21 records that the probe matched
-all 19 selected request and return schema contracts on the exact Beta.2 build.
-It called only `system.version` and `core.get_methods`; no write methods were
-called. A pass establishes only schema metadata compatibility; it does not prove
-TrueNAS accepts a write, validate runtime response data, or validate VM boot.
-Do not use this Beta fixture as evidence for another TrueNAS build.
+The exact-build probe output for commit `1b10b439f9bf2d10ff1afa0da228b30416043bc9` matched all 20 request/return schema contracts on Beta.2. It called only `system.version` and `core.get_methods`; no write methods were called. This establishes metadata compatibility only; it does not prove TrueNAS accepts a write, validate runtime response data, or validate VM boot. Do not use this Beta fixture as evidence for another TrueNAS build. The probe inspects conversion metadata only and never invokes conversion.
+
+## Repository review status (2026-10-21)
+
+- PR #2 is the open, draft, unmerged `feat/multi-distro-installer` branch to `main`; current head `62d786c939b97fb3b425a662632ce29e422604ce`. Its latest hosted Actions runs (PR run `39648144793`, push run `39648137214`) succeeded. The latest code-bearing run `39622916219` reported 116 passing tests; the current branch head has the same Git tree as the tested code commit.
+- PR #3 is the separate stacked, open, draft, unmerged `fix/readonly-preflight-memory-units` branch to `feat/multi-distro-installer`; its last verified published head before this status update was `76289eb3f5d6829127cb7e793b312c9b20a298ce`. The latest verified hosted Actions run `39644757734` succeeded. The local suite passed 138 tests, along with compilation and CLI help checks; the hosted log did not provide a test count in the evidence available for this status update.
+- `main` remains at `88ef8195da992904dc24f7cfe49a717502b3e95f`. The branch heads and CI results do not establish a live preflight, write acceptance, VM creation, or boot validation.
 
 The examples are fictional. Copy and edit them locally rather than committing
 your host's inventory. The preview command reads only the files you explicitly
@@ -100,6 +100,21 @@ Run `python3 planning/preview.py --interactive` to collect choices without touch
 The prompts collect a VM name, storage pool, existing network bridge, total vCPUs, RAM MiB, and virtual-disk size GiB. With `--inventory`, pools and bridges are shown as numbered choices from that supplied snapshot; the inventory can be stale. Without it, the pool and bridge are typed manually and the preview marks them unchecked.
 
 Storage selection is by **ZFS pool**, not an individual physical drive: the proposed path is `<pool>/linux-vms/<name>/disk0`. The future installer must create a per-VM dataset/zvol only after a fresh live preflight confirms the selected pool is healthy, writable, and has sufficient capacity. Network selection is an **existing bridge**; this planner will not create or alter bridges, VLANs, routes, or host networking. It does not set a guest IP or validate guest networking. The plan keeps the VM stopped and autostart disabled. CPU, RAM, and disk bounds are planner input limits, not host-capacity or guest-support guarantees; this remains a JSON preview, not an installer.
+
+## Read-only live preflight prototype
+
+`planning/check_readonly_preflight.py` is a separate, explicitly invoked read-only command for the experimental Ubuntu Server profile. It requires caller-selected values—including positive host-memory and pool-space reserves—and checks the exact-build fixture, selected pool health/capacity, selected bridge eligibility, VM/device/dataset path conflicts, virtualization support, CPU limit, and reported available memory. It cannot create a VM, dataset, device, or manifest and cannot start a VM. It prints only the selected identifiers and pass/fail checks, not the full queried inventory.
+
+Example invocation shape (use only deliberate caller-selected values):
+
+```sh
+python3 planning/check_readonly_preflight.py \
+  --profile ubuntu-server --vm-name <vm-name> --pool <pool-name> --bridge <bridge-name> \
+  --vcpus <count> --memory-mib <mib> --disk-gib <gib> \
+  --host-reserve-mib <mib> --pool-reserve-mib <mib>
+```
+
+It has been exercised only with fake middleware tests, not against TrueNAS. The operator-provided `TrueNAS-26.0.0-BETA.2` `core.get_methods` capture from `2026-10-21T07:28:31Z` describes available VM memory and pool free space in bytes, and `vm.create.memory` in MiB. The sanitized fixture records these build-specific units, and the preflight fails closed if any are missing or do not match the fixture build. Available memory is still a volatile snapshot. A pass is not authorization to create or start a VM; all profiles remain experimental.
 
 ## Mock-only orchestration rehearsal
 
@@ -116,7 +131,7 @@ versions or guest provisioning support implied.
 
 Names, pools and bridges use a conservative subset: 1–63 ASCII characters,
 starting with a letter, followed by letters, digits, underscores or hyphens.
-Some valid TrueNAS identifiers may therefore be rejected. CPU, RAM and disk
+Some valid TrueNAS identifiers may therefore be rejected. The offline preview allows underscores/hyphens for VM-name planning, but the TrueNAS VM API preflight and mock contract restrict live-target VM names to ASCII letters and digits. CPU, RAM and disk
 bounds are planner policy, not validated guest requirements or host capacity.
 CPU count means total virtual CPUs, modeled as one socket with that many cores
 and one thread per core. It is not yet a TrueNAS API payload.

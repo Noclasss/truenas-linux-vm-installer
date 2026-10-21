@@ -170,6 +170,10 @@ class MockInstallOrchestrationTests(unittest.TestCase):
             for method in result.middleware_calls
         ))
 
+    def test_conversion_contract_is_not_enabled_for_mock_or_live_writes(self):
+        self.assertNotIn("vm.device.convert", MOCK_WRITE_METHODS)
+        self.assertEqual(LIVE_PROFILE_ALLOWLIST, frozenset())
+
     def test_mock_backend_rejects_implicit_or_missing_dataset_ancestors(self):
         cases = (
             {

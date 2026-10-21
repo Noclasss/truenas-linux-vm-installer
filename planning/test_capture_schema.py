@@ -68,13 +68,27 @@ class SchemaCaptureTests(unittest.TestCase):
             root = Path(directory)
             methods = dict(self.methods)
             methods.pop("vm.device.create")
-            caller, _ = self.caller_for(methods)
+            methods.pop("vm.device.convert")
+            caller, calls = self.caller_for(methods)
 
             path, capture = self.capture(root / "schema.json", caller=caller, output_root=root)
 
             self.assertIn("vm.device.create", capture["missing_methods"])
+            self.assertIn("vm.device.convert", capture["missing_methods"])
             self.assertNotIn("vm.device.create", capture["methods"])
+            self.assertNotIn("vm.device.convert", capture["methods"])
+            self.assertEqual(calls, ["system.version", "core.get_methods"])
             self.assertTrue(path.is_file())
+
+    def test_capture_requests_conversion_metadata_without_calling_the_method(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            caller, calls = self.caller_for()
+            _, capture = self.capture(root / "schema.json", caller=caller, output_root=root)
+            self.assertIn("vm.device.convert", capture["requested_methods"])
+            self.assertIn("vm.device.convert", capture["methods"])
+            self.assertEqual(calls, ["system.version", "core.get_methods"])
+            self.assertNotIn("vm.device.convert", calls)
 
     def test_expected_version_accepts_json_encoded_midclt_output(self):
         with tempfile.TemporaryDirectory() as directory:

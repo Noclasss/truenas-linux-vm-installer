@@ -2,7 +2,20 @@
 
 **Status:** design and mock-only contract; no production writer exists. `LIVE_PROFILE_ALLOWLIST` remains empty. This document does not authorize TrueNAS writes or a VM boot.
 
-**Schema scope:** sanitized request/return constraints captured for `TrueNAS-26.0.0-BETA.2` in `planning/fixtures/truenas-26.0.0-beta.2-method-contracts.json`. The operator's 2026-10-21 probe checked metadata using only `system.version` and `core.get_methods`; it did not test write acceptance.
+**Schema scope:** the sanitized fixture contains 20 request/return method contracts for `TrueNAS-26.0.0-BETA.2`. The operator-provided compatibility output for commit `1b10b439f9bf2d10ff1afa0da228b30416043bc9` reports all 20 matched using only `system.version` and `core.get_methods`; no write methods were called. This does not test write acceptance.
+
+## Running the metadata capture from TrueNAS
+
+The TrueNAS WebUI shell may start in `/var/empty`; the capture script is part of the repository, not a system command. First enter a checkout of the reviewed commit and verify it before running the helper:
+
+```sh
+cd /path/to/truenas-linux-vm-installer
+test "$(git rev-parse HEAD)" = "<reviewed-commit>" || exit 1
+expected_build=$(midclt call system.version) || exit 1
+python3 planning/capture_schema.py --expected-version "$expected_build"
+```
+
+Replace the path and commit placeholder with the actual reviewed checkout and commit. If `cd` or the script path fails, stop: the repository is not checked out at that location. The helper then rechecks the build, calls only `system.version` and `core.get_methods`, and writes a new private capture under `/tmp`; it does not call conversion or any other write method. Keep the raw capture private and do not commit it.
 
 ## Proposed method boundary
 
@@ -11,6 +24,8 @@ The following is the complete candidate write set for a future Ubuntu Server cre
 - `pool.dataset.create`
 - `vm.create`
 - `vm.device.create`
+
+**Captured but not enabled method:** an operator-provided `core.get_methods` capture for exact build `TrueNAS-26.0.0-BETA.2` includes `vm.device.convert`. It is a job requiring `VM_DEVICE_WRITE`; its single required argument object has non-empty string `source` and `destination` fields, and its result is boolean. The operator's read-only probe matched its contract as part of the 20-method fixture; no conversion call was made. Offline inspection of the official middleware source at tag `TS-26.0.0-BETA.2`, commit `69e77a6f2e089d392db6e4a3df146bcbe8fba98e`, found that image-to-zvol expects an existing image file under `/mnt`, an existing ZFS volume/device node, and sufficient zvol size; it runs `qemu-img convert` to raw and refuses a zvol attached to a running VM. Zvol-to-image expects a non-existing output file under `/mnt` and an existing parent directory. This source review clarifies direction and path validation but does not establish runtime path visibility/permissions, write acceptance, successful zvol population, or failure recovery. Keep the method outside both mock and live write sets until an offline mock flow and its safety tests are reviewed. [TrueNAS `vm.device.convert` API reference](https://api.truenas.com/v26.0/api_methods_vm.device.convert.html)
 
 Explicitly outside this boundary: `vm.start`, `vm.stop`, `vm.device.delete`, dataset/VM deletion, host networking changes, and automatic rollback. A VM remains stopped and `autostart` remains false. Do not add a method to a live allowlist without a separately reviewed exact-build contract and authorization.
 
@@ -38,9 +53,24 @@ The fake models the middleware-created DISPLAY device requested by `ensure_displ
 
 ## Preflight and conflicts
 
-Before any write, a future live implementation must fail closed unless all of these hold:
+### Read-only preflight prototype
 
-- The user explicitly selected the experimental Ubuntu Server profile, valid VM name, pool, bridge, CPU/RAM/disk settings, and verified seed artifact. No automatic pool/bridge selection or host discovery.
+`planning/check_readonly_preflight.py` runs only when an operator explicitly invokes it with caller-selected values. Example shape (the placeholders must be replaced with deliberate choices):
+
+```sh
+python3 planning/check_readonly_preflight.py \
+  --profile ubuntu-server --vm-name <vm-name> --pool <pool-name> --bridge <bridge-name> \
+  --vcpus <count> --memory-mib <mib> --disk-gib <gib> \
+  --host-reserve-mib <mib> --pool-reserve-mib <mib>
+```
+
+It first checks the exact TrueNAS build and reviewed contracts, then makes only these read-only calls: `pool.query`, `pool.dataset.query`, `vm.query`, `vm.device.query`, `vm.device.nic_attach_choices`, `vm.supports_virtualization`, `vm.maximum_supported_vcpus`, and `vm.get_available_memory` (in addition to `system.version` and `core.get_methods`). Pool and bridge inputs are mandatory; query results only verify them and never choose substitutes. The preflight rejects boot pools, unhealthy or non-ONLINE pools, insufficient full-disk-plus-operator-reserve capacity, ineligible bridges, name/path collisions, unsupported virtualization, excessive vCPUs, and inadequate reported memory. It requires explicit positive host-memory and pool-space reserves rather than guessing defaults. It creates no files or resources and prints no full host inventory.
+
+The operator-provided `core.get_methods` capture for `TrueNAS-26.0.0-BETA.2`, captured at `2026-10-21T07:28:31Z`, describes available VM memory and pool free space in bytes, and `vm.create.memory` in MiB. The sanitized fixture records these units and exact build separately from the JSON schema; the preflight fails closed if any unit metadata is missing, disagrees, or belongs to another build. Available memory remains a volatile snapshot. A passing report is only read-only evidence—not authorization to create or start a VM. This command was exercised against fake middleware only; it has not been run against TrueNAS.
+
+Before any write, a future live implementation must also meet all of these requirements:
+
+- The user explicitly selected the experimental Ubuntu Server profile, valid VM name, pool, bridge, CPU/RAM/disk settings, and verified seed artifact. No automatic pool/bridge selection; read-only queries may validate only those explicit choices.
 - A fresh read confirms the selected pool is healthy and has sufficient capacity for the chosen policy, and the selected bridge is still an eligible VM attachment target.
 - No VM with the requested name exists (case-insensitive comparison), and no exact, ancestor, descendant, or wrong-type dataset collision exists at the intended paths.
 - The private operation manifest is exclusively created before the first write. It records the entire plan and ownership intent; an existing manifest is never overwritten.
