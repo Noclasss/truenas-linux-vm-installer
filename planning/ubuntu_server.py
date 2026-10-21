@@ -20,7 +20,7 @@ from typing import Callable, Sequence
 
 if __package__:
     from .installer_core.artifacts import ArtifactError, download_and_verify, ensure_private_cache_dir
-    from .installer_core.safe_filesystem import FilesystemSafetyError, write_private_new_file
+    from .installer_core.safe_filesystem import FilesystemSafetyError, ensure_trusted_directory_chain, write_private_new_file
 else:
     from installer_core.artifacts import ArtifactError, download_and_verify, ensure_private_cache_dir
     from installer_core.safe_filesystem import FilesystemSafetyError, write_private_new_file
@@ -122,7 +122,8 @@ def stage_ubuntu_server_raw_image(
         raise ProfileValidationError("raw image output must have a safe filename and no parent traversal")
     try:
         cache = ensure_private_cache_dir(Path(cache_dir))
-        output_dir = ensure_private_cache_dir(raw_output.parent)
+        # Validate the caller-selected destination without changing its mode.
+        output_dir = ensure_trusted_directory_chain(raw_output.parent, "raw image output")
     except (ArtifactError, FilesystemSafetyError, OSError) as exc:
         raise ArtifactError("image staging directory is not a trusted private directory") from exc
     target = output_dir / raw_output.name
