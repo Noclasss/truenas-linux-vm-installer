@@ -367,28 +367,38 @@ def validate_method_request(methods: Any, method: str, params: Any) -> None:
 
 
 class SchemaCheckedClient:
-    """Schema-check writes whose method names are explicitly allowlisted.
+    """Permit only explicitly allowlisted calls; schema-check allowlisted writes.
 
     Schema validation is not authorization. The default empty allowlist blocks
-    every write until the caller deliberately names permitted methods.
+    every call until the caller deliberately names permitted methods. These
+    guards apply only through this wrapper; code holding the underlying client
+    can bypass them and must treat it as trusted.
     """
 
     def __init__(
         self,
         client: Any,
         methods: dict[str, Any] | None = None,
+        allowed_read_methods: set[str] | frozenset[str] = frozenset(),
         allowed_write_methods: set[str] | frozenset[str] = frozenset(),
     ):
         self.client = client
         self.runtime_methods = methods
-        if not isinstance(allowed_write_methods, (set, frozenset)) or any(
+        self.allowed_read_methods = self._validated_allowlist(allowed_read_methods, "read")
+        self.allowed_write_methods = self._validated_allowlist(allowed_write_methods, "write")
+
+    @staticmethod
+    def _validated_allowlist(methods: set[str] | frozenset[str], kind: str) -> frozenset[str]:
+        if not isinstance(methods, (set, frozenset)) or any(
             not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.]*\Z", name)
-            for name in allowed_write_methods
+            for name in methods
         ):
-            raise SchemaError("allowed write methods must be a set of valid middleware method names")
-        self.allowed_write_methods = frozenset(allowed_write_methods)
+            raise SchemaError(f"allowed {kind} methods must be a set of valid middleware method names")
+        return frozenset(methods)
 
     def call_read(self, method: str, params: list[Any] | None = None) -> Any:
+        if not isinstance(method, str) or method not in self.allowed_read_methods:
+            raise SchemaError("middleware read method is not explicitly allowlisted")
         payload = [] if params is None else params
         if not isinstance(payload, list):
             raise SchemaError("middleware parameters must be a positional list")

@@ -20,10 +20,11 @@ was cloned read-only for review and was not modified.
 - `schema.py`: positional middleware request validation, including required
   arguments, JSON types, enums/constants, unions, local references, object and
   array bounds, finite schema nesting/reference handling, and a wrapper that
-  requires an explicit write-method allowlist before validating a payload and
-  invoking the client. Schema validation is not authorization; the caller must
-  choose the allowlist deliberately. It is a documented subset, not a complete
-  JSON Schema implementation.
+  blocks calls unless their methods are explicitly allowlisted. It validates
+  write payloads before invoking the client. Schema validation is not
+  authorization, and code holding the underlying client can bypass the wrapper;
+  callers must keep it trusted and choose allowlists deliberately. It is a
+  documented subset, not a complete JSON Schema implementation.
 - `safe_filesystem.py`: trusted-directory checks, mode-0600 exclusive creation,
   no-overwrite behavior, and atomic private file replacement.
 - `artifacts.py`: generic HTTPS-only redirects, private digest-keyed caching,

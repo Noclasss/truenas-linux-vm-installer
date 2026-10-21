@@ -174,7 +174,18 @@ class MiddlewareSchemaTests(unittest.TestCase):
             checked.call_write("vm.create", [{}])
         with self.assertRaisesRegex(schema.SchemaError, "not explicitly allowlisted"):
             checked.call_write(["pool.destroy"], [])
+        with self.assertRaisesRegex(schema.SchemaError, "read method is not explicitly allowlisted"):
+            checked.call_read("vm.start", [1])
         client.call.assert_not_called()
+
+    def test_checked_client_allows_only_explicit_read_methods(self):
+        client = mock.Mock()
+        client.call.return_value = [{"id": 1}]
+        checked = schema.SchemaCheckedClient(client, allowed_read_methods={"vm.query"})
+        self.assertEqual(checked.call_read("vm.query", []), [{"id": 1}])
+        with self.assertRaisesRegex(schema.SchemaError, "read method is not explicitly allowlisted"):
+            checked.call_read("vm.start", [1])
+        self.assertEqual(client.call.call_args_list, [mock.call("vm.query", [])])
 
 
 class SafeFilesystemTests(unittest.TestCase):
