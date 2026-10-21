@@ -82,11 +82,12 @@ python3 planning/verify_compatibility.py
 
 The exact-build probe output for commit `1b10b439f9bf2d10ff1afa0da228b30416043bc9` matched all 20 request/return schema contracts on Beta.2. It called only `system.version` and `core.get_methods`; no write methods were called. This establishes metadata compatibility only; it does not prove TrueNAS accepts a write, validate runtime response data, or validate VM boot. Do not use this Beta fixture as evidence for another TrueNAS build. The probe inspects conversion metadata only and never invokes conversion.
 
-## Repository review status (2026-10-21)
+## Repository merge status (2026-10-21)
 
-- PR #2 is the open, draft, unmerged `feat/multi-distro-installer` branch to `main`; current head `62d786c939b97fb3b425a662632ce29e422604ce`. Its latest hosted Actions runs (PR run `39648144793`, push run `39648137214`) succeeded. The latest code-bearing run `39622916219` reported 116 passing tests; the current branch head has the same Git tree as the tested code commit.
-- PR #3 is the separate stacked, open, draft, unmerged `fix/readonly-preflight-memory-units` branch to `feat/multi-distro-installer`; its last verified published head before this status update was `76289eb3f5d6829127cb7e793b312c9b20a298ce`. The latest verified hosted Actions run `39644757734` succeeded. The local suite passed 138 tests, along with compilation and CLI help checks; the hosted log did not provide a test count in the evidence available for this status update.
-- `main` remains at `88ef8195da992904dc24f7cfe49a717502b3e95f`. The branch heads and CI results do not establish a live preflight, write acceptance, VM creation, or boot validation.
+- PR #3 (`fix/readonly-preflight-memory-units`) was squash-merged into `feat/multi-distro-installer` as `4ddf0b79a9c62658fc6aeabe88b1adafe860d004`; PR #2 (`feat/multi-distro-installer`) was then squash-merged into `main` as `f40ca4c8cd520a6cbae0d9732cb43e9d59a16dc4`.
+- Hosted Actions run `39655018669` on the resulting `main` commit succeeded. Its hosted test count was not independently retrieved. The local suite passed 138 tests; compilation, preview/CLI, fixture-count, targeted secret/private-data, and whitespace checks passed.
+- The earlier 19-method count refers to the initial fixture. The merged fixture contains 20 selected request/return contracts; the operator's exact-build comparison matched all 20 on `TrueNAS-26.0.0-BETA.2`, using only `system.version` and `core.get_methods` and no write methods.
+- Merge and CI evidence do not establish live preflight, write acceptance, VM creation, or boot validation. All four profiles remain experimental, and the live-profile allowlist remains empty.
 
 The examples are fictional. Copy and edit them locally rather than committing
 your host's inventory. The preview command reads only the files you explicitly
