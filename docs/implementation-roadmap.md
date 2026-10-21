@@ -1,53 +1,72 @@
-# Implementation Roadmap (Recovery Baseline)
+# Implementation Roadmap
 
-**Status: experimental offline planner, reusable safety components, and mock-only orchestration rehearsal.** The branch contains no live Linux VM installer. The in-memory rehearsal does not connect to TrueNAS and proves neither write compatibility nor guest behavior.
+**Current state (2026-10-21):** an experimental offline planner, tested reusable safety helpers, and a mock-only Ubuntu Server orchestration rehearsal. There is no live installer. No Linux VM has been created by this repository.
 
-## Confirmed project constraints
+## Guardrails
 
-- Work only on `feat/multi-distro-installer`; keep `main` unchanged.
-- Keep Ubuntu Server, Ubuntu Desktop, Debian Server, and Debian Desktop marked experimental until each has its own successful disposable-VM boot and first-boot validation.
-- No live VM creation, host networking changes, or changes to existing TrueNAS resources during offline development.
-- PR #2 already exists as a draft; keep it unmerged and draft while acceptance criteria remain incomplete. No merge or release without separate approval.
+- Develop on `feat/multi-distro-installer`; keep `main` unchanged.
+- Keep PR #2 draft and unmerged until its acceptance gates are complete. Do not release or merge without separate approval.
+- Keep Ubuntu Server, Ubuntu Desktop, Debian Server, and Debian Desktop experimental until each has its own supported-version disposable-VM boot and first-boot evidence.
+- Offline work must not create TrueNAS resources, alter host networking, or change existing VMs, storage, or devices.
+- Any live validation must be separately authorized, isolated, and use no production credentials.
 
-## Confirmed technical facts
+## What exists
 
-- TrueNAS 25.04 and later use a versioned JSON-RPC 2.0 WebSocket API; TrueNAS documentation says the REST API was removed in TrueNAS 26. The TrueNAS API client includes `midclt`. The documented API version must be selected for the exact target build; method names alone are not sufficient evidence of accepted payloads.
-- The versioned TrueNAS API reference lists `vm.create` and `vm.device.create`, but a method index is not a request contract. The published 25.04.2 `vm.create` schema marks `name` and `memory` required, with `autostart: true` and `ensure_display_device: true` as defaults. Do not assume those defaults or accepted fields are identical on 25.10/26; capture `system.version` and exact `core.get_methods` metadata for the target build before enabling writes. Any future installer must explicitly set `autostart: false` and read back the final device inventory.
-- Canonical's official cloud-image catalog listed `release-20261016` as the latest dated Ubuntu 26.04 LTS amd64 Server release observed on 2026-10-21; its manifest and image were last modified on 2026-10-20. The downloaded, pinned image passed exact-size/SHA-256 verification; `qemu-img info` reported QCOW2, virtual size 3,758,096,384 bytes, no backing file, and `dirty-flag: false`, while `qemu-img check` found no errors. A scratch-only QCOW2-to-raw conversion also succeeded (same virtual size, 819,237,376 bytes allocated). The detached manifest signature was checked against key fingerprint `D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81`; the Python verifier did not check key revocation/self-signatures. This does not prove TrueNAS import/write acceptance or guest boot.
-- The Ubuntu Server profile has an offline NoCloud bootstrap helper. A real `cloud-localds` run built a local CIDATA ISO with both `user-data` and `meta-data`; the seed was inspected with `isoinfo` and used a synthetic, nonfunctional test public key. TrueNAS `vm.device.create`'s `CDROM` `path` is present in the 26.0.0-BETA.2 accepted-request fixture; write acceptance, attachment, boot, and first-boot behavior remain unverified. Ubuntu autoinstall is not used for this preinstalled cloud image.
-- Debian's Cloud Team publishes images for selected environments. Its docs describe a KVM generic image and recommend generic over genericcloud for maximum compatibility, but that is not validation on TrueNAS/KVM. Confirm the exact release, artifact, architecture, boot mode, integrity metadata, cloud-init support, and first-boot flow before implementing a Debian profile.
+| Area | Current evidence | Limit |
+|---|---|---|
+| Offline planner | Config validation, optional caller-supplied inventory checks, interactive profile/resource prompts, JSON preview. | Does not query TrueNAS; inventory may be stale. |
+| Reusable safety core | Mock-tested bounded `midclt` wrapper, positional schema checks, private/atomic files, HTTPS downloads with size and SHA-256 checks. Read and write allowlists default to empty. | Not connected to an install flow. |
+| Ubuntu Server preparation | Pinned official Ubuntu 26.04 LTS amd64 cloud image passed exact-size/SHA-256 and QCOW2 checks. Offline NoCloud seed helper built and inspected a local CIDATA ISO using a synthetic test key. | No TrueNAS import, zvol population, boot, or first-boot validation. |
+| Mock orchestration | Stateful fake rehearses dataset/zvol, stopped VM, device sequencing, manifest and read-back, using sanitized fixture constraints. Failure cases avoid retry and automatic cleanup. | Fake-only; no `midclt`, downloads, storage writes, or live resource creation. |
+| TrueNAS compatibility | Sanitized request and return schema constraints for 19 selected methods from `TrueNAS-26.0.0-BETA.2`; bounded fail-closed validator and optional read-only comparison probe. | Operator report covers the earlier request-only probe. The newer request-plus-return comparison still needs an operator run on that exact build. Schema matches do not prove write acceptance. |
+| CI | Planner workflow discovers `planning/test_*.py`; the suite passed 68 tests on head `24849b41722b5e9c4ab68cfe20c2abec245979ee`. | A documentation-only update does not change code coverage or establish live compatibility. |
 
-## Staged work
+## Next work, in order
 
-1. **Recovery baseline:** preserve the offline planner and document verified scope, constraints, and evidence gaps; do not represent this work as recovery of the missing installer.
-2. **Ubuntu Server profile research:** the signed-manifest-pinned image is downloaded and inspected as QCOW2, and a real local NoCloud seed ISO has been built; TrueNAS import/write acceptance, VM boot, and first-boot remain unverified.
-3. **Reusable installer core:** generic `midclt`, positional-schema validation, private-file, and verified-download components have been adapted from the separate HAOS installer with mocked tests. A sanitized fixture and offline compatibility tests now cover request and return schemas for 19 selected methods captured for `TrueNAS-26.0.0-BETA.2`; an optional read-only probe compares that exact build and both schema classes. The core is not wired to a live install flow. Keep image/provisioning behavior per distro profile.
-4. **Plan and preview:** show resource choices without downloading or writing anything. The offline CLI now offers a numbered profile menu plus VM name, storage-pool, existing-bridge, vCPU, RAM, and virtual-disk-size prompts; `--profile` remains an explicit override. Inventory menus use only caller-supplied snapshots. The preview stays static, experimental, stopped, autostart-disabled, and unappliable.
-5. **Mocked install orchestration (implemented, mock-only):** `planning/mock_install.py` rehearses Ubuntu Server dataset/zvol, VM, and device sequencing against a stateful in-memory `MockMiddleware`; validates write payloads against the sanitized Beta.2 request schemas; creates an exclusive private local manifest; records middleware-created display devices; and verifies exact fake read-back while leaving the VM stopped. Failure tests retain the manifest, do not retry ambiguous writes, and perform no cleanup. `LIVE_PROFILE_ALLOWLIST` remains empty. The mock does not download/import/populate images, call `midclt`, create a TrueNAS resource, or validate a real VM.
-6. **CI and publication:** the existing planner workflow discovers all `planning/test_*.py` files, so the new mock orchestration tests run with the planner, schema-capture, compatibility-fixture, and reusable-core tests. This change does not edit the workflow. Push only the feature branch and verify its SHA before updating the draft PR.
-7. **Disposable live validation:** only after separate approval and safe isolation/capacity checks, validate Ubuntu Server boot, console, first-boot provisioning, networking, and access. Do not use production credentials.
-8. **Expand profiles one at a time:** add Ubuntu Desktop, Debian Server, then Debian Desktop only after each has a distinct verified artifact/provisioning path and independent tests. Keep all experimental until disposable boot and first-boot evidence exists.
+### 1. Close the read-only schema evidence gap
 
-## Evidence gaps / blockers
+If the exact Beta.2 host is still available, run `planning/verify_compatibility.py` there. Record the exact build, date, pass/fail, and that the calls were limited to `system.version` and `core.get_methods`. Do not copy a raw host capture or credentials into Git. If the host has moved to another build, capture and review a separate fixture for that build; never generalize the Beta.2 fixture.
 
-- The prior live-installer implementation and its local-only commits could not be recovered. The current remote offline planner is preserved and augmented with a read-only schema-capture helper and an unconnected, attributed safety core; none of this is a restoration of the missing installer.
-- An operator-provided read-only capture records `TrueNAS-26.0.0-BETA.2`; 19/19 selected method definitions were present. The fixture now retains sanitized request and return schema constraints. The operator's earlier probe report covered request schemas only; the updated return-schema comparison has not yet been run on the host. The current probe still calls only `system.version` and `core.get_methods`; neither comparison establishes write acceptance, runtime response data, or guest behavior.
-- No profile has been boot-tested in a disposable VM from this repository.
-- The Ubuntu Server artifact's exact bytes and QCOW2 format are verified, and the real local seed-building command has succeeded. The repository still has no live TrueNAS resource-write path, QCOW2 import/population implementation, boot/console workflow, or first-boot evidence; no VM was created. The mock request payloads passing fixture checks is limited schema evidence, not write acceptance.
-- `.github/workflows/planner-tests.yml` discovers the full `planning/test_*.py` suite, including the mock-only orchestration tests. This change leaves the workflow unchanged. The previously inspected credential lacked `workflow` scope; reauthorize the existing integration before any future workflow-file change if needed, and do not create a replacement credential.
+**Done when:** the request-and-return schema comparison has an attributable operator result, or the roadmap clearly records that the check remains unavailable.
 
-## Official references
+### 2. Complete offline image staging and conversion
 
-- TrueNAS API overview: https://www.truenas.com/docs/scale/26/api/
-- TrueNAS 25.04.2 `vm.create` schema: https://api.truenas.com/v25.04.2/api_methods_vm.create.html
-- TrueNAS 25.10 VM method index (names only): https://api.truenas.com/v25.10.0/api_methods_vm.html
-- Official Ubuntu cloud images, pinned dated release: https://cloud-images.ubuntu.com/releases/server/26.04/release-20261016/
-- Ubuntu image checksum/signature verification: https://ubuntu.com/docs/public-images/public-images-how-to/verify-image-checksum/
-- cloud-init NoCloud datasource: https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html
-- Canonical cloud-utils `cloud-localds` source: https://github.com/canonical/cloud-utils/blob/main/bin/cloud-localds
-- Ubuntu cloud-init overview: https://ubuntu.com/server/docs/explanation/intro-to/cloud-init/
-- Ubuntu automatic Server installation: https://ubuntu.com/server/docs/how-to/installation/
-- Ubuntu Desktop autoinstall: https://ubuntu.com/desktop/docs/en/latest/tutorial/install-ubuntu-desktop/
-- Debian cloud overview: https://wiki.debian.org/Cloud
-- Debian cloud image comparison: https://wiki.debian.org/Cloud/SystemsComparison
-- Debian cloud image lifecycle: https://wiki.debian.org/Cloud/ImageLifecycle
+Add a separately testable Ubuntu Server helper that stages the pinned cloud image in a private temporary directory, verifies exact size and SHA-256 before use, inspects QCOW2 metadata, and converts to a new raw image only when required. Use bounded subprocess calls without a shell, reject backing files or unexpected virtual sizes, refuse to overwrite outputs, and clean up only helper-owned temporary files. Add tests for corrupt input, command failure/timeout, unexpected metadata, and existing output. Do not add middleware calls or TrueNAS writes in this milestone.
+
+**Done when:** successful conversion and all failure paths are reproducible offline, and documentation describes where the produced image is stored and how it is verified.
+
+### 3. Review the install boundary before any live writer
+
+Keep `LIVE_PROFILE_ALLOWLIST` empty. Before implementing a real writer, review exact-build schemas for every method and request, define fresh preflight and duplicate/conflict checks, make each write's acknowledgement/read-back behavior explicit, and document interruption/reconciliation behavior. Any live path must default to stopped VMs and autostart disabled, never delete resources automatically, and operate only on installer-owned paths.
+
+**Done when:** code review confirms explicit method/payload allowlists and tests cover ambiguous failures, partial completion, and safe reconciliation. This gate does not itself authorize a live run.
+
+### 4. Validate Ubuntu Server in a disposable environment
+
+Only after separate approval and isolation/capacity checks, validate image import, zvol population, VM definition, console, networking, and NoCloud first boot on a disposable target. Capture reproducible evidence without production credentials or changes to existing resources.
+
+**Done when:** the exact TrueNAS build, resource settings, test result, and limitations are documented, and any failure leaves existing host resources untouched.
+
+### 5. Expand one profile at a time
+
+Research and implement Ubuntu Desktop, Debian Server, and Debian Desktop separately. For each, pin an official artifact and integrity data, verify its boot and provisioning model, add offline tests, then repeat disposable validation. Do not infer that one distro or edition works because another does.
+
+## Evidence and scope notes
+
+- TrueNAS 25.04 and later use a versioned JSON-RPC 2.0 WebSocket API; TrueNAS 26 removes the REST API. Select and verify contracts for the exact build before considering any write path. A method index or schema match alone is not write-acceptance evidence.
+- The Beta.2 fixture omits descriptive metadata and raw host captures. It covers only 19 selected methods and must not be used for another build.
+- Image checksum/QCOW2 checks and a local NoCloud ISO build establish artifact and helper properties only. They do not establish TrueNAS import behavior, device attachment, boot, networking, or guest provisioning.
+- Planner bounds and mocked tests are not host-capacity checks or permission to install.
+- Preserve the upstream MIT license and attribution for the adapted safety components. Keep the adaptation boundary documented in `docs/installer-core-provenance.md`.
+
+## References
+
+- [TrueNAS 26 API reference](https://www.truenas.com/docs/scale/26/api/)
+- [TrueNAS 25.04.2 `vm.create` schema](https://api.truenas.com/v25.04.2/api_methods_vm.create.html)
+- [TrueNAS 25.10 VM method index](https://api.truenas.com/v25.10.0/api_methods_vm.html)
+- [Ubuntu pinned cloud-image release](https://cloud-images.ubuntu.com/releases/server/26.04/release-20261016/)
+- [Ubuntu cloud-image checksum verification](https://ubuntu.com/docs/public-images/public-images-how-to/verify-image-checksum/)
+- [cloud-init NoCloud datasource](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html)
+- [Canonical `cloud-localds` source](https://github.com/canonical/cloud-utils/blob/main/bin/cloud-localds)
+- [Debian cloud overview](https://wiki.debian.org/Cloud)
+- [Debian image comparison](https://wiki.debian.org/Cloud/SystemsComparison)
