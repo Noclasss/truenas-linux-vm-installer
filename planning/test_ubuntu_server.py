@@ -169,6 +169,28 @@ class UbuntuServerProfileTests(unittest.TestCase):
         self.assertIn("#cloud-config", observed["user_data"])
         self.assertEqual(json.loads(observed["meta_data"])["local-hostname"], "test-vm")
 
+    def test_seed_builder_preserves_existing_output_directory_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory) / "published"
+            output_dir.mkdir(mode=0o755)
+            output_dir.chmod(0o755)
+            output = output_dir / "seed.iso"
+
+            def fake_runner(args, **kwargs):
+                Path(args[5]).write_bytes(b"mocked-iso-image")
+                return subprocess.CompletedProcess(args, 0)
+
+            result = build_seed_iso(
+                output,
+                vm_name="test-vm",
+                username="alice",
+                ssh_authorized_keys=[dummy_public_key()],
+                runner=fake_runner,
+            )
+            self.assertEqual(result, output)
+            self.assertEqual(stat.S_IMODE(output_dir.stat().st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+
     def test_seed_builder_refuses_overwrite_before_running_tool(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "seed.iso"
