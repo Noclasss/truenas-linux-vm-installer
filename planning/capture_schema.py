@@ -12,12 +12,16 @@ import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
+
+try:
+    from .installer_core.safe_filesystem import FilesystemSafetyError, ensure_trusted_directory_chain, write_private_new_file as write_private_file
+except ImportError:  # direct execution as ``python planning/capture_schema.py``
+    from installer_core.safe_filesystem import FilesystemSafetyError, ensure_trusted_directory_chain, write_private_new_file as write_private_file
 
 DEFAULT_OUTPUT_ROOT = Path("/tmp")
 MIDCLT_TIMEOUT_SECONDS = 120
@@ -101,24 +105,13 @@ def validate_output_parent(path: Path, root: Path = DEFAULT_OUTPUT_ROOT) -> Path
     absolute = Path(os.path.abspath(os.fspath(path.expanduser())))
     absolute_root = Path(os.path.abspath(os.fspath(root.expanduser())))
     try:
-        absolute.relative_to(absolute_root)
-    except ValueError as exc:
-        raise CaptureError(f"Capture output must remain under {absolute_root}") from exc
-
-    owners = {0, os.geteuid()}
-    current = Path(absolute.anchor)
-    for component in absolute.parent.parts:
-        if component == absolute.anchor:
-            continue
-        current = current / component
-        try:
-            info = current.lstat()
-        except OSError as exc:
-            raise CaptureError("Output directory is missing or inaccessible") from exc
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in owners:
-            raise CaptureError("Output path contains a symlink, non-directory, or untrusted owner")
-        if info.st_mode & 0o022 and not (info.st_mode & stat.S_ISVTX and info.st_uid == 0):
-            raise CaptureError("Output path contains an unsafe group/world-writable directory")
+        ensure_trusted_directory_chain(
+            absolute.parent,
+            "capture output",
+            allowed_root=absolute_root,
+        )
+    except FilesystemSafetyError as exc:
+        raise CaptureError(str(exc)) from exc
     return absolute
 
 
@@ -129,23 +122,12 @@ def default_output_path(version: str, root: Path = DEFAULT_OUTPUT_ROOT) -> Path:
 
 def write_private_new_file(path: Path, text: str, root: Path = DEFAULT_OUTPUT_ROOT) -> Path:
     path = validate_output_parent(path, root)
-    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(path, flags, 0o600)
-    except FileExistsError as exc:
-        raise CaptureError(f"Refusing to overwrite existing capture file: {path}") from exc
-    except OSError as exc:
-        raise CaptureError(f"Could not create private capture file at {path}") from exc
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            os.fchmod(stream.fileno(), 0o600)
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except OSError as exc:
-        path.unlink(missing_ok=True)
-        raise CaptureError(f"Could not finish writing capture file at {path}") from exc
-    return path
+        return write_private_file(path, text, allowed_root=root)
+    except FilesystemSafetyError as exc:
+        if "overwrite" in str(exc):
+            raise CaptureError(f"Refusing to overwrite existing capture file: {path}") from exc
+        raise CaptureError(f"Could not safely write capture file at {path}") from exc
 
 
 def capture_schema(

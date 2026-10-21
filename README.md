@@ -4,7 +4,7 @@ A standalone project for fast deployment of new Linux Server and Desktop virtual
 
 ## Status
 
-**Experimental offline planner only; no live installer is released.** The `planning/` module validates settings and produces a JSON preview. It cannot create or start a VM. A separate helper can capture selected middleware method metadata read-only when explicitly run by an operator in a TrueNAS host shell; it does not install anything. See [planner and schema-capture documentation](planning/README.md).
+**Experimental offline planner and reusable safety core only; no live installer is released.** The `planning/` module validates settings and produces a JSON preview. `planning/installer_core/` contains tested infrastructure adapted from the HAOS TrueNAS installer—middleware/schema validation, safe local files, and verified HTTPS artifact downloads—but it is not wired to an install flow. The offline planner and schema-capture helper do not create or start a VM. The schema-capture helper can record selected middleware metadata read-only when an operator explicitly runs it in a TrueNAS host shell. See [planner and schema-capture documentation](planning/README.md) and [core reuse notes](docs/installer-core-provenance.md).
 
 This project is separate from the Home Assistant OS installer so Linux distributions and installation workflows can be designed without affecting HAOS.
 

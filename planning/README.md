@@ -21,6 +21,22 @@ python3 planning/preview.py --config planning/examples/vm.json --inventory plann
 python3 -m unittest discover -s planning -p 'test_*.py' -v
 ```
 
+## Reusable installer core (not a live installer)
+
+`installer_core/` adapts generic safety components from the separate
+[HAOS TrueNAS installer](https://github.com/Noclasss/haos-truenas-installer):
+local `midclt` calls with timeouts, middleware positional-schema validation,
+private and atomic file handling, and HTTPS-only digest/size-verified downloads.
+The port includes mocked tests and keeps the upstream MIT notice in this repo's
+`LICENSE` file. See `docs/installer-core-provenance.md` for boundaries and source
+revision.
+
+These helpers are infrastructure only. They are not called by an install flow;
+no live installer entry point or guest provisioning path exists. The HAOS release
+metadata, HAOS disk/firmware assumptions, defaults, and installer flow were not
+copied. Linux artifact URLs, checksums, image formats, boot settings, and
+provisioning must be defined and validated per distro profile before reuse.
+
 For the separately authorized local schema snapshot, run this from the TrueNAS
 host shell (not from an ordinary development machine):
 
