@@ -16,7 +16,7 @@ from planning.mock_install import (
 )
 
 
-FIXTURE = Path(__file__).parent / "fixtures" / "truenas-26.0.0-beta.2-request-schemas.json"
+FIXTURE = Path(__file__).parent / "fixtures" / "truenas-26.0.0-beta.2-method-contracts.json"
 
 
 def make_backend(**kwargs):

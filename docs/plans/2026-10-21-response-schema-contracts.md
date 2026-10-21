@@ -1,0 +1,58 @@
+# Exact-Build Middleware Response Contracts Plan
+
+> **For Hermes:** Implement this plan with offline tests only. Never invoke TrueNAS methods beyond the already-authorized read-only probe, and do not add a live install path.
+
+**Goal:** Extend the sanitized TrueNAS 26.0.0-BETA.2 compatibility fixture and checker to compare return schemas as well as accepted request schemas, so later preflight/installer code is based on reviewed response contracts.
+
+**Architecture:** Reuse the operator-provided local method-definition capture, which contains method metadata but no runtime inventory values. Normalize only schema constraints and selected annotations, retain the full raw capture outside Git, and add offline tests proving changed/missing return schemas fail compatibility checks. Keep all middleware calls in the probe limited to `system.version` and `core.get_methods`; this work must not invoke any schema-described query or write method.
+
+**Tech Stack:** Python standard library, existing bounded schema normalizer, sanitized JSON fixture, `unittest`.
+
+---
+
+## Safety boundaries
+
+- Work only on `feat/multi-distro-installer`; never push to `main`, merge, or deploy.
+- Do not connect to TrueNAS or run any middleware method during implementation or tests.
+- Use only schema definitions from the local operator-provided capture; never copy runtime inventory, credentials, private paths, or the raw capture into Git.
+- Keep `LIVE_PROFILE_ALLOWLIST` empty and all distro profiles experimental.
+- Schema comparison is not write acceptance, runtime-response validation, or guest-boot evidence.
+
+## Task 1: Add response-schema comparison tests
+
+**Files:** `planning/test_compatibility.py`, `planning/test_installer_core.py`.
+
+1. Add fixtures with a simple `returns` schema and assert normalized method contracts retain it.
+2. Add compatibility tests where a return type, required property, or enum differs; each must fail closed.
+3. Test malformed/unsupported response-schema keywords and missing runtime `returns` when the fixture requires them.
+4. Run focused tests and confirm the new assertions fail before implementation.
+
+## Task 2: Extend schema normalization and compatibility
+
+**Files:** `planning/installer_core/schema.py`, `planning/installer_core/compatibility.py`.
+
+1. Keep request validation fail-closed for unsupported constraints.
+2. Add bounded response-contract normalization that can preserve known response annotations such as `format` for comparison without treating them as validated runtime values.
+3. Normalize `returns` alongside `accepts`, preserving method-local definitions and schema composition constraints.
+4. Verify compatibility compares both contracts while the runtime probe still calls only `system.version` then `core.get_methods`.
+5. Run focused tests and the compatibility test suite.
+
+## Task 3: Sanitize the exact-build fixture
+
+**Files:** `planning/fixtures/truenas-26.0.0-beta.2-method-contracts.json`, `planning/test_compatibility.py`.
+
+1. Extract return-schema definitions for the exact 19 already-selected methods from `/opt/data/cache/documents/doc_011850ba4845_truenas-methods.json`.
+2. Retain only schema constraints needed for stable comparison; remove descriptions, examples, and unrelated descriptive metadata. Preserve request schemas unchanged.
+3. Do not copy host values or commit the raw capture.
+4. Add fixture tests for method count, format, and required return contracts.
+5. Run offline comparison against the local capture and ensure all 19 request and return contracts normalize identically.
+
+## Task 4: Documentation, review, and delivery
+
+**Files:** `README.md`, `planning/README.md`, `docs/implementation-roadmap.md`.
+
+1. State that the read-only probe compares request and return schemas but invokes only `system.version` and `core.get_methods`.
+2. State that this improves contract review only; live method behavior, write acceptance, and VM boot remain unverified.
+3. Run the complete unit suite, compilation, static preview, limited secret/private-IP scan, and `git diff --check`; inspect the full intended diff.
+4. Commit and push only the feature branch if checks pass. Read back the feature SHA and exact-head Actions runs; confirm `main` is unchanged and PR #2 remains draft/open/unmerged.
+5. Do not close issue #1 or mark any profile supported.

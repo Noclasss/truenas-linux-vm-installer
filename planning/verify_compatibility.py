@@ -15,7 +15,7 @@ except ImportError:  # direct execution as ``python planning/verify_compatibilit
     from installer_core.compatibility import CompatibilityError, verify_runtime_compatibility
     from installer_core.middleware import MiddlewareError, MidcltClient
 
-DEFAULT_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "truenas-26.0.0-beta.2-request-schemas.json"
+DEFAULT_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "truenas-26.0.0-beta.2-method-contracts.json"
 MAX_FIXTURE_BYTES = 1_000_000
 
 
@@ -43,7 +43,7 @@ def load_fixture(path: Path = DEFAULT_FIXTURE) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Compare a TrueNAS build and selected accepted-request schemas using read-only calls only."
+        description="Compare a TrueNAS build and selected request/return schema contracts using read-only calls only."
     )
     parser.add_argument("--fixture", type=Path, default=DEFAULT_FIXTURE, help="reviewed schema fixture (default: captured TrueNAS 26.0.0-BETA.2)")
     args = parser.parse_args(argv)
@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Compatibility check failed: {exc}", file=sys.stderr)
         return 1
     print(f"Read-only compatibility check passed for {report.truenas_version}.")
-    print(f"Matched accepted-request schemas for {len(report.checked_methods)} selected methods.")
+    print(f"Matched request/return schema contracts for {len(report.checked_methods)} selected methods.")
     print("Middleware calls made: system.version and core.get_methods only; no write methods called.")
     return 0
 

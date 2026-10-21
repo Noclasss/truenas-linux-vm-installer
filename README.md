@@ -29,7 +29,7 @@ All profiles are experimental until each has passed automated tests and disposab
 - Leave new VMs powered off unless starting is explicitly requested.
 - Keep install manifests so failed runs can be reconciled safely.
 
-No live Linux VM has been created or validated by this repository. The operator reports that the read-only compatibility probe passed on `TrueNAS-26.0.0-BETA.2`, matching 19 selected request schemas using only `system.version` and `core.get_methods`. This does not establish write acceptance, guest boot, or first-boot behavior.
+No live Linux VM has been created or validated by this repository. An earlier operator report said the read-only compatibility probe matched 19 request schemas on `TrueNAS-26.0.0-BETA.2`, using only `system.version` and `core.get_methods`. The checker now also compares return schemas, but that expanded check has not yet been run on the host. Neither schema comparison establishes write acceptance, actual runtime response data, guest boot, or first-boot behavior.
 
 ## Try the offline preview
 

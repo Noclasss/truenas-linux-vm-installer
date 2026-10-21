@@ -40,7 +40,7 @@ SUPPORTED_SCHEMA_KEYWORDS = frozenset({
     "$ref", "type", "const", "enum", "oneOf", "anyOf", "allOf", "properties",
     "required", "additionalProperties", "items", "additionalItems", "minItems",
     "maxItems", "uniqueItems", "minLength", "maxLength", "pattern", "minimum",
-    "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+    "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "format",
 })
 UNSUPPORTED_SCHEMA_KEYWORDS = frozenset({
     "format", "not", "if", "then", "else", "patternProperties", "propertyNames",
@@ -55,13 +55,22 @@ _SCHEMA_ANNOTATIONS = frozenset({
 })
 
 
-def normalize_schema_contract(schema: Any, path: str = "argument", _depth: int = 0) -> dict[str, Any]:
+def normalize_schema_contract(
+    schema: Any,
+    path: str = "argument",
+    _depth: int = 0,
+    *,
+    allow_format: bool = False,
+) -> dict[str, Any]:
     """Return a constraint-only schema shape, rejecting unsupported keywords."""
     if _depth > MAX_SCHEMA_DEPTH:
         raise SchemaError(f"{path}: middleware schema exceeds the nesting limit")
     if not isinstance(schema, dict):
         raise SchemaError(f"{path}: middleware schema node is malformed")
-    unsupported = sorted(set(schema) & UNSUPPORTED_SCHEMA_KEYWORDS)
+    unsupported_keys = set(schema) & UNSUPPORTED_SCHEMA_KEYWORDS
+    if allow_format:
+        unsupported_keys.discard("format")
+    unsupported = sorted(unsupported_keys)
     if unsupported:
         raise SchemaError(f"{path}: unsupported middleware schema keyword {unsupported[0]!r}")
     unknown = sorted(set(schema) - SUPPORTED_SCHEMA_KEYWORDS - _SCHEMA_ANNOTATIONS)
@@ -75,14 +84,14 @@ def normalize_schema_contract(schema: Any, path: str = "argument", _depth: int =
             if not isinstance(value, dict):
                 raise SchemaError(f"{path}: middleware properties schema is malformed")
             normalized[keyword] = {
-                name: normalize_schema_contract(child, f"{path}.{keyword}.{name}", _depth + 1)
+                name: normalize_schema_contract(child, f"{path}.{keyword}.{name}", _depth + 1, allow_format=allow_format)
                 for name, child in value.items()
             }
         elif keyword in {"items", "additionalItems", "additionalProperties"} and isinstance(value, dict):
-            normalized[keyword] = normalize_schema_contract(value, f"{path}.{keyword}", _depth + 1)
+            normalized[keyword] = normalize_schema_contract(value, f"{path}.{keyword}", _depth + 1, allow_format=allow_format)
         elif keyword == "items" and isinstance(value, list):
             normalized[keyword] = [
-                normalize_schema_contract(child, f"{path}.{keyword}[{index}]", _depth + 1)
+                normalize_schema_contract(child, f"{path}.{keyword}[{index}]", _depth + 1, allow_format=allow_format)
                 for index, child in enumerate(value)
             ]
         elif keyword == "additionalItems" and isinstance(value, list):
@@ -95,7 +104,7 @@ def normalize_schema_contract(schema: Any, path: str = "argument", _depth: int =
             if not isinstance(value, list) or not value:
                 raise SchemaError(f"{path}: middleware {keyword} definition is malformed")
             normalized[keyword] = [
-                normalize_schema_contract(child, f"{path}.{keyword}[{index}]", _depth + 1)
+                normalize_schema_contract(child, f"{path}.{keyword}[{index}]", _depth + 1, allow_format=allow_format)
                 for index, child in enumerate(value)
             ]
         elif keyword == "required":
@@ -140,6 +149,10 @@ def normalize_schema_contract(schema: Any, path: str = "argument", _depth: int =
             if type(value) is not bool:
                 raise SchemaError(f"{path}: middleware uniqueItems value is malformed")
             normalized[keyword] = value
+        elif keyword == "format":
+            if not allow_format or not isinstance(value, str) or not value:
+                raise SchemaError(f"{path}: unsupported or malformed middleware schema format")
+            normalized[keyword] = value
         else:
             normalized[keyword] = value
     if "_name_" in schema:
@@ -170,13 +183,21 @@ def normalize_schema_contract(schema: Any, path: str = "argument", _depth: int =
 
 
 def normalize_method_contract(metadata: Any, method: str) -> dict[str, Any]:
-    """Normalize accepted request schemas and local definitions for comparison."""
+    """Normalize accepted requests, return schemas, and local definitions."""
     accepts = _accepted_args(metadata, method)
     normalized: dict[str, Any] = {
         "accepts": [normalize_schema_contract(item, f"{method}.accepts[{index}]") for index, item in enumerate(accepts)]
     }
     if not isinstance(metadata, dict):
         raise SchemaError(f"runtime schema for {method} is missing or malformed")
+    returns = metadata.get("returns")
+    if returns is not None:
+        if not isinstance(returns, list) or not returns:
+            raise SchemaError(f"runtime schema for {method} has malformed return schemas")
+        normalized["returns"] = [
+            normalize_schema_contract(item, f"{method}.returns[{index}]", allow_format=True)
+            for index, item in enumerate(returns)
+        ]
     for key in ("$defs", "definitions"):
         definitions = metadata.get(key)
         if definitions is not None:

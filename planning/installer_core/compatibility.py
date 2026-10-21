@@ -1,4 +1,4 @@
-"""Read-only comparison of live TrueNAS request schemas to a pinned fixture."""
+"""Read-only comparison of live TrueNAS request and return schemas to a pinned fixture."""
 from __future__ import annotations
 
 import re
@@ -8,7 +8,7 @@ from typing import Any
 from .schema import SchemaError, normalize_method_contract
 
 
-_FIXTURE_FORMAT = "truenas-request-schema-fixture-v1"
+_FIXTURE_FORMAT = "truenas-method-contract-fixture-v1"
 _BUILD = re.compile(r"TrueNAS-[A-Za-z0-9._+-]+\Z")
 _METHOD = re.compile(r"[A-Za-z][A-Za-z0-9_.]*\Z")
 
@@ -24,7 +24,7 @@ class CompatibilityReport:
 
 
 def verify_runtime_compatibility(client: Any, fixture: Any) -> CompatibilityReport:
-    """Check exact build and accepted-request schemas using read-only calls only.
+    """Check exact build and request/return schemas using read-only calls only.
 
     The client is called only with ``system.version`` and ``core.get_methods``.
     No method whose schema is inspected is invoked.
@@ -62,8 +62,8 @@ def verify_runtime_compatibility(client: Any, fixture: Any) -> CompatibilityRepo
             expected_contract = normalize_method_contract(expected, method)
             runtime_contract = normalize_method_contract(runtime, method)
         except SchemaError as exc:
-            raise CompatibilityError(f"invalid request schema for {method}: {exc}") from exc
+            raise CompatibilityError(f"invalid method contract for {method}: {exc}") from exc
         if runtime_contract != expected_contract:
-            raise CompatibilityError(f"accepted-request schema differs from the reviewed fixture: {method}")
+            raise CompatibilityError(f"request/return schema differs from the reviewed fixture: {method}")
         checked.append(method)
     return CompatibilityReport(expected_version, tuple(checked))

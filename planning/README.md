@@ -67,24 +67,27 @@ Running the helper is read-only, but the resulting schema is not proof that any
 VM request will be accepted or that a guest can boot.
 
 An operator-provided capture for `TrueNAS-26.0.0-BETA.2` was reduced to a
-sanitized fixture at `fixtures/truenas-26.0.0-beta.2-request-schemas.json`.
-It contains only accepted-argument constraints for the 19 selected methods;
-return schemas, defaults, and descriptive metadata are omitted. The raw capture is not in
-the repository. The bounded validator rejects unsupported schema assertions
-instead of silently ignoring them.
+sanitized fixture at `fixtures/truenas-26.0.0-beta.2-method-contracts.json`.
+It contains normalized accepted-request and return-schema constraints for the 19
+selected methods; descriptions, examples, defaults, and other descriptive
+metadata are omitted. The raw capture is not in the repository. The bounded
+validator rejects unsupported schema assertions instead of silently ignoring them.
 
 On a host running that exact build, this optional probe re-reads only
-`system.version` and `core.get_methods`, then compares accepted-request schemas:
+`system.version` and `core.get_methods`, then compares request and return schemas:
 
 ```sh
 python3 planning/verify_compatibility.py
 ```
 
-A build mismatch stops before querying method schemas. The operator reports this
-probe passed on the exact Beta.2 host, matching all 19 selected schemas. A pass
-establishes only that the selected request-schema metadata matches this fixture;
-it does not invoke those methods, prove TrueNAS will accept a write, or validate
-VM boot. Do not use the Beta fixture as evidence for another TrueNAS build.
+A build mismatch stops before querying method schemas.
+A prior operator report said the request-only probe passed on the exact Beta.2
+host; that report does not cover the return-schema comparison added here. The
+current checker compares both request and return schema metadata using only
+`system.version` and `core.get_methods`. A pass establishes only schema metadata
+compatibility; it does not invoke those methods, prove TrueNAS accepts a write,
+validate runtime response data, or validate VM boot. Do not use this Beta fixture
+as evidence for another TrueNAS build.
 
 The examples are fictional. Copy and edit them locally rather than committing
 your host's inventory. The preview command reads only the files you explicitly

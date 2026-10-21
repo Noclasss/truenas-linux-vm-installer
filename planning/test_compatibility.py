@@ -7,7 +7,7 @@ from typing import Any
 from installer_core import compatibility
 from installer_core.schema import SchemaError, validate_method_request
 
-FIXTURE_PATH = Path(__file__).parent / "fixtures" / "truenas-26.0.0-beta.2-request-schemas.json"
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "truenas-26.0.0-beta.2-method-contracts.json"
 
 
 class FakeReadOnlyClient:
@@ -31,13 +31,17 @@ class CapturedSchemaTests(unittest.TestCase):
         cls.fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
         cls.methods = cls.fixture["methods"]
 
-    def test_fixture_is_minimized_to_all_requested_request_contracts(self):
+    def test_fixture_is_minimized_to_all_selected_method_contracts(self):
         self.assertEqual(self.fixture["truenas_version"], "TrueNAS-26.0.0-BETA.2")
         self.assertEqual(self.fixture["method_count"], 19)
         self.assertEqual(len(self.methods), 19)
-        self.assertNotIn("returns", self.fixture)
         self.assertNotIn("available_method_count", self.fixture)
-        self.assertTrue(all(set(metadata) <= {"accepts", "$defs", "definitions"} for metadata in self.methods.values()))
+        self.assertTrue(all(
+            set(metadata) <= {"accepts", "returns", "$defs", "definitions"}
+            and "accepts" in metadata
+            and "returns" in metadata
+            for metadata in self.methods.values()
+        ))
 
     def test_haos_reference_payload_shapes_match_captured_schemas(self):
         sample_vm = {
@@ -110,6 +114,53 @@ class CapturedSchemaTests(unittest.TestCase):
         client = FakeReadOnlyClient(self.fixture["truenas_version"], incomplete)
         with self.assertRaisesRegex(compatibility.CompatibilityError, "method is missing"):
             compatibility.verify_runtime_compatibility(client, self.fixture)
+
+    def _synthetic_fixture(self, *, returns=None):
+        contract = {"accepts": []}
+        if returns is not None:
+            contract["returns"] = returns
+        return {
+            "format": self.fixture["format"],
+            "truenas_version": self.fixture["truenas_version"],
+            "method_count": 1,
+            "methods": {"test.read": contract},
+        }
+
+    def test_return_schema_mismatch_is_rejected(self):
+        expected = self._synthetic_fixture(returns=[{
+            "type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "required": ["id"],
+            "additionalProperties": False,
+        }])
+        runtime = copy.deepcopy(expected["methods"])
+        runtime["test.read"]["returns"][0]["properties"]["id"]["type"] = "string"
+        client = FakeReadOnlyClient(expected["truenas_version"], runtime)
+        with self.assertRaisesRegex(compatibility.CompatibilityError, "schema differs"):
+            compatibility.verify_runtime_compatibility(client, expected)
+        self.assertEqual(client.calls, ["system.version", "core.get_methods"])
+
+    def test_response_format_annotation_is_compared(self):
+        expected = self._synthetic_fixture(returns=[{"type": "string", "format": "date-time"}])
+        runtime = copy.deepcopy(expected["methods"])
+        runtime["test.read"]["returns"][0]["format"] = "uri"
+        client = FakeReadOnlyClient(expected["truenas_version"], runtime)
+        with self.assertRaisesRegex(compatibility.CompatibilityError, "schema differs"):
+            compatibility.verify_runtime_compatibility(client, expected)
+
+    def test_unsupported_return_schema_keyword_fails_closed(self):
+        expected = self._synthetic_fixture(returns=[{"type": "object", "minProperties": 1}])
+        client = FakeReadOnlyClient(expected["truenas_version"], expected["methods"])
+        with self.assertRaisesRegex(compatibility.CompatibilityError, "invalid method contract"):
+            compatibility.verify_runtime_compatibility(client, expected)
+        self.assertEqual(client.calls, ["system.version", "core.get_methods"])
+
+    def test_fixture_required_return_schema_cannot_be_missing_at_runtime(self):
+        expected = self._synthetic_fixture(returns=[{"type": "boolean"}])
+        runtime = {"test.read": {"accepts": []}}
+        client = FakeReadOnlyClient(expected["truenas_version"], runtime)
+        with self.assertRaisesRegex(compatibility.CompatibilityError, "schema differs"):
+            compatibility.verify_runtime_compatibility(client, expected)
 
 
 if __name__ == "__main__":
