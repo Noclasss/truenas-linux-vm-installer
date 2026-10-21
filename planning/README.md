@@ -84,9 +84,9 @@ The exact-build probe output for commit `1b10b439f9bf2d10ff1afa0da228b30416043bc
 
 ## Repository merge status (2026-10-21)
 
-- PR #3 (`fix/readonly-preflight-memory-units`) was squash-merged into `feat/multi-distro-installer` as `4ddf0b79a9c62658fc6aeabe88b1adafe860d004`; PR #2 (`feat/multi-distro-installer`) was then squash-merged into `main` as `f40ca4c8cd520a6cbae0d9732cb43e9d59a16dc4`. Documentation PR #5 was squash-merged as `5393a2fea8d32fe896bfcc54163183fd4834c074`, the current `main` head.
-- Latest main push run `39656161788` succeeded; its hosted test count was not independently retrieved. The main baseline passed 138 local tests. PR #6 (`feat/mock-fresh-zvol-import`) is open against `main`; 142 local tests pass, and hosted planner run `39668637557` succeeded on commit `c165c56`.
-- PR #4 remains open/draft and superseded by #5; it should not be merged as-is. PR #6 is tracked in milestone #1, **Offline Mock Review and CI**. Issue #1 remains open in milestone #2, **Disposable Validation and Profile Support**; no due dates are set.
+- PR #3 (`fix/readonly-preflight-memory-units`) was squash-merged into `feat/multi-distro-installer` as `4ddf0b79a9c62658fc6aeabe88b1adafe860d004`; PR #2 (`feat/multi-distro-installer`) was then squash-merged into `main` as `f40ca4c8cd520a6cbae0d9732cb43e9d59a16dc4`. Documentation PR #5 was squash-merged as `5393a2fea8d32fe896bfcc54163183fd4834c074`; mock-only PR #6 was then squash-merged, leaving `main` at `f72d9f43bad386a939bac8de0044298cbebf18d7`.
+- Main push run `39669932188` succeeded after the PR #6 merge; hosted test count is unknown. PR #6's planner run `39669242388` succeeded for its head, and 142 local tests passed. The earlier main push run `39656161788` and 138-test local baseline describe the previous main state.
+- PR #4 remains open/draft and superseded by #5; it should not be merged as-is. Milestone #1, **Offline Mock Review and CI**, is complete and closed with PR #6. Issue #1 remains open in milestone #2, **Disposable Validation and Profile Support**; no due dates are set.
 - The earlier 19-method count refers to the initial fixture. The merged fixture contains 20 selected request/return contracts; the operator's exact-build comparison matched all 20 on `TrueNAS-26.0.0-BETA.2`, using only `system.version` and `core.get_methods` and no write methods.
 - Merge and CI evidence do not establish live preflight, write acceptance, VM creation, or boot validation. All four profiles remain experimental, and the live-profile allowlist remains empty.
 
