@@ -1,0 +1,9 @@
+{
+  "profile": "ubuntu-server",
+  "name": "linux-demo",
+  "pool": "tank",
+  "bridge": "br0",
+  "vcpus": 2,
+  "memory_mib": 4096,
+  "disk_gib": 32
+}

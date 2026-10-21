@@ -1,0 +1,8 @@
+{
+  "vm_names": ["home-assistant"],
+  "datasets": ["tank", "tank/linux-vms"],
+  "bridges": ["br0"],
+  "pools": {
+    "tank": {"available_bytes": 107374182400}
+  }
+}

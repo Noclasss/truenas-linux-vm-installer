@@ -1,0 +1,23 @@
+name: Offline planner tests
+on:
+  push:
+    branches: [main, feat/multi-distro-installer]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  planner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 2
+      - name: Unit tests
+        run: python3 -m unittest discover -s planning -p 'test_*.py' -v
+      - name: Compile
+        run: python3 -m compileall -q planning
+      - name: Preview examples
+        run: python3 planning/preview.py --config planning/examples/vm.json --inventory planning/examples/inventory.json
+      - name: Whitespace check
+        run: git diff --check HEAD^ HEAD
