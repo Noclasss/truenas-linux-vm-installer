@@ -287,10 +287,10 @@ def build_seed_iso(
     user_data = build_cloud_config(username, ssh_authorized_keys)
     meta_data = build_meta_data(vm_name)
     try:
-        cache_dir = ensure_private_cache_dir(raw_output.parent)
+        output_dir = ensure_trusted_directory_chain(raw_output.parent, "seed output")
     except (ArtifactError, FilesystemSafetyError, OSError) as exc:
-        raise SeedImageError("seed output directory is not a trusted private directory") from exc
-    target = cache_dir / raw_output.name
+        raise SeedImageError("seed output directory is not trusted") from exc
+    target = output_dir / raw_output.name
     try:
         target.lstat()
     except FileNotFoundError:
@@ -302,7 +302,7 @@ def build_seed_iso(
 
     published = False
     try:
-        with tempfile.TemporaryDirectory(prefix=".nocloud-", dir=cache_dir) as temporary:
+        with tempfile.TemporaryDirectory(prefix=".nocloud-", dir=output_dir) as temporary:
             stage = Path(temporary)
             os.chmod(stage, 0o700)
             user_path = write_private_new_file(stage / "user-data", user_data)
@@ -353,7 +353,7 @@ def build_seed_iso(
             except FileExistsError as exc:
                 raise SeedImageError("refusing to overwrite an existing seed output") from exc
             published = True
-            directory_fd = os.open(cache_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            directory_fd = os.open(output_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             try:
                 os.fsync(directory_fd)
             finally:
