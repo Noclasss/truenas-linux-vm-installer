@@ -31,6 +31,9 @@ else:
     from ubuntu_server import PROFILE_ID
 
 LIVE_PROFILE_ALLOWLIST: frozenset[str] = frozenset()
+MOCK_WRITE_METHODS: frozenset[str] = frozenset(
+    {"pool.dataset.create", "vm.create", "vm.device.create"}
+)
 _MOCK_VM_NAME = re.compile(r"[A-Za-z][A-Za-z0-9]{0,62}\Z")
 _MOCK_POOL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _MOCK_SEED_IDENTIFIER = "mock://seed/cidata.iso"
@@ -80,7 +83,7 @@ class MockMiddleware:
         if not isinstance(params, list):
             raise MockInstallError("mock middleware parameters must be a list")
         self.calls.append((method, json.loads(json.dumps(params))))
-        if method in {"pool.dataset.create", "vm.create", "vm.device.create"}:
+        if method in MOCK_WRITE_METHODS:
             try:
                 validate_method_request(self.methods, method, params)
             except SchemaError as exc:
@@ -159,6 +162,16 @@ class MockRunResult:
     device_ids: tuple[int, ...]
     final_power_state: str
     middleware_calls: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class MockReconciliationAssessment:
+    """Read-only assessment; it never retries, resumes, or cleans up a mock run."""
+
+    disposition: str
+    manifest_consistent: bool
+    discrepancies: tuple[str, ...]
+    untracked_resources: tuple[str, ...]
 
 
 def live_profile_enabled(profile: str) -> bool:
@@ -273,6 +286,7 @@ def run_mock_install(
             "zvol": zvol,
             "vm_name": request.vm_name,
         },
+        "preflight": {"shared_parent_state": "not_checked"},
         "created": {"datasets": [], "vm": None, "devices": []},
         "notes": [
             "No TrueNAS API, download, image conversion, host storage, or VM start occurred.",
@@ -294,7 +308,14 @@ def run_mock_install(
         ):
             raise MockInstallError("VM name appeared after mock preflight")
 
-        if not any(item.get("id") == shared_parent for item in datasets_before):
+        shared_parent_preexisting = any(
+            item.get("id") == shared_parent for item in datasets_before
+        )
+        manifest["preflight"]["shared_parent_state"] = (
+            "existing_filesystem" if shared_parent_preexisting else "absent_before_write"
+        )
+        _persist(path, manifest)
+        if not shared_parent_preexisting:
             shared_parent_result = middleware.call(
                 "pool.dataset.create", [{"name": shared_parent, "type": "FILESYSTEM"}]
             )
@@ -435,3 +456,176 @@ def run_mock_install(
         if isinstance(exc, MockInstallError):
             raise
         raise MockInstallError("mock orchestration failed; manifest retained; no retry or cleanup performed") from exc
+
+
+def inspect_mock_reconciliation(
+    manifest: dict[str, Any], middleware: MockMiddleware
+) -> MockReconciliationAssessment:
+    """Compare a failed mock manifest with fake state without changing either.
+
+    This reports only whether the recorded partial state matches the fake. It
+    never declares a live resource safe to resume or delete; every failed mock
+    run remains a manual-review case.
+    """
+    if type(middleware) is not MockMiddleware:
+        raise MockInstallError("mock-only backend required for mock reconciliation assessment")
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("format") != "truenas-linux-mock-manifest-v1"
+        or manifest.get("mode") != "offline-mock-only"
+        or manifest.get("status") != "reconcile_required"
+    ):
+        raise MockInstallError("reconciliation assessment requires a failed mock manifest")
+
+    planned = manifest.get("planned")
+    created = manifest.get("created")
+    preflight = manifest.get("preflight")
+    if not isinstance(planned, dict) or not isinstance(created, dict) or not isinstance(preflight, dict):
+        raise MockInstallError("mock manifest structure is incomplete")
+    shared_parent = planned.get("shared_parent_dataset")
+    parent = planned.get("parent_dataset")
+    zvol = planned.get("zvol")
+    vm_name = planned.get("vm_name")
+    shared_parent_state = preflight.get("shared_parent_state")
+    if (
+        not isinstance(shared_parent, str)
+        or not shared_parent
+        or not isinstance(parent, str)
+        or not parent
+        or not isinstance(zvol, str)
+        or not zvol
+        or not isinstance(vm_name, str)
+        or not vm_name
+    ):
+        raise MockInstallError("mock manifest resource plan is invalid")
+    if shared_parent_state not in {"existing_filesystem", "absent_before_write"}:
+        raise MockInstallError("mock manifest lacks a valid shared-parent preflight observation")
+
+    discrepancies: set[str] = set()
+    untracked: set[str] = set()
+
+    dataset_rows = middleware.call("pool.dataset.query", [])
+    vm_rows = middleware.call("vm.query", [])
+    device_rows = middleware.call("vm.device.query", [])
+    dataset_by_id: dict[str, dict[str, Any]] = {}
+    for row in dataset_rows:
+        identifier = row.get("id")
+        if not isinstance(identifier, str):
+            discrepancies.add("invalid_dataset_inventory")
+        elif identifier in dataset_by_id:
+            discrepancies.add(f"duplicate_dataset_id:{identifier}")
+        else:
+            dataset_by_id[identifier] = row
+    vm_by_id: dict[int, dict[str, Any]] = {}
+    for row in vm_rows:
+        identifier = row.get("id")
+        if type(identifier) is not int:
+            discrepancies.add("invalid_vm_inventory")
+        elif identifier in vm_by_id:
+            discrepancies.add(f"duplicate_vm_id:{identifier}")
+        else:
+            vm_by_id[identifier] = row
+    device_by_id: dict[int, dict[str, Any]] = {}
+    for row in device_rows:
+        identifier = row.get("id")
+        if type(identifier) is not int:
+            discrepancies.add("invalid_device_inventory")
+        elif identifier in device_by_id:
+            discrepancies.add(f"duplicate_device_id:{identifier}")
+        else:
+            device_by_id[identifier] = row
+
+    recorded_dataset_ids: set[str] = set()
+    recorded_datasets = created.get("datasets")
+    if not isinstance(recorded_datasets, list):
+        discrepancies.add("invalid_manifest_datasets")
+        recorded_datasets = []
+    for row in recorded_datasets:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not isinstance(row.get("type"), str):
+            discrepancies.add("invalid_manifest_dataset_record")
+            continue
+        identifier = row["id"]
+        if identifier in recorded_dataset_ids:
+            discrepancies.add(f"duplicate_manifest_dataset:{identifier}")
+            continue
+        recorded_dataset_ids.add(identifier)
+        if identifier not in {shared_parent, parent, zvol}:
+            discrepancies.add(f"unexpected_manifest_dataset:{identifier}")
+        actual = dataset_by_id.get(identifier)
+        if actual is None:
+            discrepancies.add(f"missing_recorded_dataset:{identifier}")
+        elif actual.get("type") != row["type"]:
+            discrepancies.add(f"changed_recorded_dataset:{identifier}")
+
+    for identifier in (shared_parent, parent, zvol):
+        actual = dataset_by_id.get(identifier)
+        if identifier == shared_parent and shared_parent_state == "existing_filesystem" and identifier not in recorded_dataset_ids:
+            if actual is None or actual.get("type") != "FILESYSTEM":
+                discrepancies.add(f"preexisting_shared_parent_changed:{identifier}")
+            continue
+        if actual is None:
+            discrepancies.add(f"planned_dataset_absent:{identifier}")
+        elif identifier not in recorded_dataset_ids:
+            untracked.add(f"dataset:{identifier}")
+    for identifier in dataset_by_id:
+        if identifier.startswith(parent + "/") and identifier not in recorded_dataset_ids:
+            untracked.add(f"dataset:{identifier}")
+
+    recorded_vm = created.get("vm")
+    target_vm_ids: set[int] = set()
+    matching_vms = [
+        row for row in vm_rows
+        if isinstance(row.get("name"), str) and row["name"].casefold() == vm_name.casefold()
+    ]
+    if recorded_vm is None:
+        for row in matching_vms:
+            identifier = row.get("id")
+            if type(identifier) is int:
+                target_vm_ids.add(identifier)
+                untracked.add(f"vm:{vm_name}")
+    elif not isinstance(recorded_vm, dict) or type(recorded_vm.get("id")) is not int or recorded_vm.get("name") != vm_name:
+        discrepancies.add("invalid_manifest_vm_record")
+    else:
+        identifier = recorded_vm["id"]
+        target_vm_ids.add(identifier)
+        actual = vm_by_id.get(identifier)
+        if actual is None:
+            discrepancies.add(f"missing_recorded_vm:{vm_name}")
+        elif actual.get("name") != vm_name:
+            discrepancies.add(f"changed_recorded_vm:{vm_name}")
+        for row in matching_vms:
+            if row.get("id") != identifier and type(row.get("id")) is int:
+                target_vm_ids.add(row["id"])
+                untracked.add(f"vm:{row.get('name')}")
+
+    recorded_device_ids: set[int] = set()
+    recorded_devices = created.get("devices")
+    if not isinstance(recorded_devices, list):
+        discrepancies.add("invalid_manifest_devices")
+        recorded_devices = []
+    for row in recorded_devices:
+        if not isinstance(row, dict) or type(row.get("id")) is not int or type(row.get("vm")) is not int:
+            discrepancies.add("invalid_manifest_device_record")
+            continue
+        identifier = row["id"]
+        if identifier in recorded_device_ids:
+            discrepancies.add(f"duplicate_manifest_device:{identifier}")
+            continue
+        recorded_device_ids.add(identifier)
+        target_vm_ids.add(row["vm"])
+        actual = device_by_id.get(identifier)
+        if actual is None:
+            discrepancies.add(f"missing_recorded_device:{identifier}")
+        elif actual.get("vm") != row["vm"] or actual.get("attributes") != row.get("attributes"):
+            discrepancies.add(f"changed_recorded_device:{identifier}")
+    for row in device_rows:
+        if row.get("vm") in target_vm_ids and type(row.get("id")) is int and row["id"] not in recorded_device_ids:
+            untracked.add(f"device:{row['id']}")
+
+    all_issues = discrepancies | untracked
+    return MockReconciliationAssessment(
+        disposition="manual_review_required",
+        manifest_consistent=not all_issues,
+        discrepancies=tuple(sorted(discrepancies)),
+        untracked_resources=tuple(sorted(untracked)),
+    )

@@ -7,10 +7,12 @@ from typing import Any, cast
 
 from planning.mock_install import (
     LIVE_PROFILE_ALLOWLIST,
+    MOCK_WRITE_METHODS,
     MockAmbiguousWrite,
     MockInstallError,
     MockInstallRequest,
     MockMiddleware,
+    inspect_mock_reconciliation,
     live_profile_enabled,
     run_mock_install,
 )
@@ -80,15 +82,73 @@ class MockInstallOrchestrationTests(unittest.TestCase):
         self.assertEqual(backend.writes.count("pool.dataset.create"), 3)
         dataset_creates = [params[0] for method, params in backend.calls if method == "pool.dataset.create"]
         self.assertEqual(
-            [item["name"] for item in dataset_creates],
+            dataset_creates,
             [
-                "mock-pool/linux-vms",
-                "mock-pool/linux-vms/MockUbuntu",
-                "mock-pool/linux-vms/MockUbuntu/disk0",
+                {"name": "mock-pool/linux-vms", "type": "FILESYSTEM"},
+                {"name": "mock-pool/linux-vms/MockUbuntu", "type": "FILESYSTEM"},
+                {
+                    "name": "mock-pool/linux-vms/MockUbuntu/disk0",
+                    "type": "VOLUME",
+                    "volsize": 32 * 1024**3,
+                    "sparse": True,
+                },
             ],
         )
         self.assertTrue(all("create_ancestors" not in item for item in dataset_creates))
         self.assertEqual(backend.writes.count("vm.device.create"), 3)
+        write_calls = [
+            (method, params[0])
+            for method, params in backend.calls
+            if method in MOCK_WRITE_METHODS
+        ]
+        self.assertEqual(
+            [method for method, _ in write_calls],
+            [
+                "pool.dataset.create", "pool.dataset.create", "pool.dataset.create",
+                "vm.create", "vm.device.create", "vm.device.create", "vm.device.create",
+            ],
+        )
+        self.assertEqual(set(backend.writes), MOCK_WRITE_METHODS)
+        self.assertEqual(
+            write_calls[2][1],
+            {
+                "name": "mock-pool/linux-vms/MockUbuntu/disk0",
+                "type": "VOLUME",
+                "volsize": 32 * 1024**3,
+                "sparse": True,
+            },
+        )
+        self.assertEqual(
+            write_calls[3][1],
+            {
+                "name": "MockUbuntu",
+                "memory": 4096,
+                "vcpus": 2,
+                "bootloader": "UEFI",
+                "enable_secure_boot": False,
+                "autostart": False,
+                "ensure_display_device": True,
+                "description": "EXPERIMENTAL MOCK ONLY - not a live installer VM",
+            },
+        )
+        self.assertEqual(
+            [payload for method, payload in write_calls if method == "vm.device.create"],
+            [
+                {
+                    "vm": result.vm_id,
+                    "attributes": {
+                        "dtype": "DISK",
+                        "path": "/dev/zvol/mock-pool/linux-vms/MockUbuntu/disk0",
+                        "type": "VIRTIO",
+                    },
+                },
+                {"vm": result.vm_id, "attributes": {"dtype": "CDROM", "path": "mock://seed/cidata.iso"}},
+                {
+                    "vm": result.vm_id,
+                    "attributes": {"dtype": "NIC", "nic_attach": "mock-bridge", "type": "VIRTIO"},
+                },
+            ],
+        )
         vm_create = next(params[0] for method, params in backend.calls if method == "vm.create")
         self.assertIs(vm_create["autostart"], False)
         self.assertIs(vm_create["enable_secure_boot"], False)
@@ -143,6 +203,25 @@ class MockInstallOrchestrationTests(unittest.TestCase):
         self.assertEqual(backend.writes.count("pool.dataset.create"), 2)
         self.assertEqual(backend.datasets[shared_parent]["type"], "FILESYSTEM")
         self.assertEqual(manifest["planned"]["shared_parent_dataset"], shared_parent)
+
+    def test_reconciliation_does_not_claim_preexisting_shared_parent(self):
+        shared_parent = "mock-pool/linux-vms"
+        backend = make_backend(
+            fail_after_apply_method="pool.dataset.create",
+            datasets={shared_parent: {"id": shared_parent, "type": "FILESYSTEM"}},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            with self.assertRaisesRegex(MockInstallError, "lost response"):
+                run_mock_install(
+                    request(), backend, manifest_path=path,
+                    confirmation="CREATE MOCK MockUbuntu",
+                )
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["preflight"]["shared_parent_state"], "existing_filesystem")
+        assessment = inspect_mock_reconciliation(manifest, backend)
+        self.assertNotIn(f"dataset:{shared_parent}", assessment.untracked_resources)
+        self.assertIn("dataset:mock-pool/linux-vms/MockUbuntu", assessment.untracked_resources)
 
     def test_confirmation_and_mock_backend_are_mandatory_before_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -245,6 +324,17 @@ class MockInstallOrchestrationTests(unittest.TestCase):
         self.assertEqual(set(backend.datasets), {shared_parent})
         self.assertEqual(manifest["created"]["datasets"], [])
         self.assertFalse(any(method.endswith(".delete") for method, _ in backend.calls))
+        writes_before = tuple(backend.writes)
+        call_count = len(backend.calls)
+        assessment = inspect_mock_reconciliation(manifest, backend)
+        self.assertEqual(assessment.disposition, "manual_review_required")
+        self.assertFalse(assessment.manifest_consistent)
+        self.assertIn(f"dataset:{shared_parent}", assessment.untracked_resources)
+        self.assertEqual(tuple(backend.writes), writes_before)
+        self.assertEqual(
+            [method for method, _ in backend.calls[call_count:]],
+            ["pool.dataset.query", "vm.query", "vm.device.query"],
+        )
 
     def test_ambiguous_write_is_not_retried_and_manifest_requires_reconciliation(self):
         backend = make_backend(fail_after_apply_method="vm.create")
@@ -259,6 +349,12 @@ class MockInstallOrchestrationTests(unittest.TestCase):
         self.assertEqual(backend.writes.count("vm.create"), 1)
         self.assertEqual(len(backend.vms), 1)  # applied despite lost response
         self.assertEqual(backend.writes.count("vm.device.create"), 0)
+        writes_before = tuple(backend.writes)
+        assessment = inspect_mock_reconciliation(manifest, backend)
+        self.assertEqual(assessment.disposition, "manual_review_required")
+        self.assertFalse(assessment.manifest_consistent)
+        self.assertIn("vm:MockUbuntu", assessment.untracked_resources)
+        self.assertEqual(tuple(backend.writes), writes_before)
         self.assertFalse(any(method.endswith(".delete") for method, _ in backend.calls))
 
     def test_midflow_failure_retains_manifest_and_does_not_rollback_or_retry(self):
@@ -273,6 +369,11 @@ class MockInstallOrchestrationTests(unittest.TestCase):
         self.assertEqual(backend.writes.count("vm.device.create"), 1)
         self.assertEqual(len(backend.vms), 1)
         self.assertGreaterEqual(len(backend.devices), 2)  # auto display + applied device
+        writes_before = tuple(backend.writes)
+        assessment = inspect_mock_reconciliation(manifest, backend)
+        self.assertEqual(assessment.disposition, "manual_review_required")
+        self.assertTrue(any(item.startswith("device:") for item in assessment.untracked_resources))
+        self.assertEqual(tuple(backend.writes), writes_before)
         self.assertFalse(any(method.endswith(".delete") for method, _ in backend.calls))
 
     def test_failure_before_vm_create_keeps_manifested_storage_without_cleanup(self):
@@ -288,6 +389,16 @@ class MockInstallOrchestrationTests(unittest.TestCase):
         self.assertEqual(backend.writes.count("vm.create"), 0)
         self.assertEqual(len(backend.vms), 0)
         self.assertEqual(len(backend.datasets), 3)
+        writes_before = tuple(backend.writes)
+        assessment = inspect_mock_reconciliation(manifest, backend)
+        self.assertEqual(assessment.disposition, "manual_review_required")
+        self.assertTrue(assessment.manifest_consistent)
+        self.assertEqual(assessment.untracked_resources, ())
+        self.assertEqual(tuple(backend.writes), writes_before)
+        self.assertEqual(
+            [method for method, _ in backend.calls[-3:]],
+            ["pool.dataset.query", "vm.query", "vm.device.query"],
+        )
         self.assertFalse(any(method.endswith(".delete") for method, _ in backend.calls))
 
     def test_schema_mismatch_blocks_vm_write_after_manifesting_prior_resources(self):
