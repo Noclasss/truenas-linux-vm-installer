@@ -4,7 +4,7 @@ A standalone project for fast deployment of new Linux Server and Desktop virtual
 
 ## Status
 
-**Experimental offline planner and reusable safety core only; no live installer is released.** The `planning/` module validates settings and produces a JSON preview. `planning/installer_core/` contains tested infrastructure adapted from the HAOS TrueNAS installer—middleware/schema validation, safe local files, and verified HTTPS artifact downloads—but it is not wired to an install flow. The offline planner and schema-capture helper do not create or start a VM. The schema-capture helper can record selected middleware metadata read-only when an operator explicitly runs it in a TrueNAS host shell. See [planner and schema-capture documentation](planning/README.md) and [core reuse notes](docs/installer-core-provenance.md).
+**Experimental offline planner and reusable safety core only; no live installer is released.** The `planning/` module validates settings and produces a JSON preview. `planning/installer_core/` contains tested infrastructure adapted from the HAOS TrueNAS installer—middleware/schema validation, safe local files, and verified HTTPS artifact downloads—but it is not wired to an install flow. An operator-provided `TrueNAS-26.0.0-BETA.2` schema capture is represented by a sanitized 19-method request-schema fixture and an optional read-only compatibility probe; neither creates or starts a VM or proves write acceptance. See [planner and schema-capture documentation](planning/README.md) and [core reuse notes](docs/installer-core-provenance.md).
 
 This project is separate from the Home Assistant OS installer so Linux distributions and installation workflows can be designed without affecting HAOS.
 
@@ -29,7 +29,7 @@ All profiles are experimental until each has passed automated tests and disposab
 - Leave new VMs powered off unless starting is explicitly requested.
 - Keep install manifests so failed runs can be reconciled safely.
 
-No live Linux VM has been created or validated by this repository. Mocked tests, TrueNAS schema checks, preview checks, and live-install verification must be reported separately rather than conflated.
+No live Linux VM has been created or validated by this repository. Current evidence is an operator-provided Beta.2 request-schema capture, offline compatibility checks, preview tests, and mocked installer-core tests; no runtime compatibility probe, middleware write, guest boot, or first-boot test has been performed.
 
 ## Try the offline preview
 

@@ -4,7 +4,7 @@ This independent module provides validation and a reviewable JSON plan for the
 future installer. The `preview.py` planner is offline-only: it reads only files
 you explicitly pass, makes no middleware calls, and does not write files, create
 storage, or start VMs. There is no apply flag. Run it on any development machine
-with Python 3.9 or newer; no third-party packages are required.
+with Python 3.10 or newer; no third-party packages are required.
 
 A separate `capture_schema.py` helper is provided for an operator to run from an
 authenticated TrueNAS host shell. It makes only the read-only `system.version`
@@ -52,6 +52,25 @@ capture out through an existing trusted channel for review; **do not commit it**
 Running the helper is read-only, but the resulting schema is not proof that any
 VM request will be accepted or that a guest can boot.
 
+An operator-provided capture for `TrueNAS-26.0.0-BETA.2` was reduced to a
+sanitized fixture at `fixtures/truenas-26.0.0-beta.2-request-schemas.json`.
+It contains only accepted-argument constraints for the 19 selected methods;
+return schemas and descriptive metadata are omitted. The raw capture is not in
+the repository. The bounded validator rejects unsupported schema assertions
+instead of silently ignoring them.
+
+On a host running that exact build, this optional probe re-reads only
+`system.version` and `core.get_methods`, then compares accepted-request schemas:
+
+```sh
+python3 planning/verify_compatibility.py
+```
+
+A build mismatch stops before querying method schemas. A pass establishes only
+that the selected request-schema metadata matches this fixture; it does not
+invoke those methods, prove TrueNAS will accept a write, or validate VM boot.
+Do not use the Beta fixture as evidence for another TrueNAS build.
+
 The examples are fictional. Copy and edit them locally rather than committing
 your host's inventory. The preview command reads only the files you explicitly
 supply and prints the plan to stdout. Invalid input produces an error on stderr
@@ -95,7 +114,7 @@ plan, but a future installer must verify its suitability before creating childre
 ## Remaining installation gates
 
 1. Integrate and review the unpublished installer source.
-2. Discover and validate live TrueNAS version/API schemas using read-only calls.
+2. Run the read-only build/schema compatibility probe on the intended host; any build without a reviewed fixture remains unchecked.
 3. Select official images with trusted integrity metadata and distro-specific provisioning.
 4. Revalidate live names, storage, networking and host capacity immediately before creation.
 5. Implement explicit confirmation, durable ownership manifests and conservative recovery.

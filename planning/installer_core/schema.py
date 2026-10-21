@@ -33,10 +33,167 @@ def _resolve_ref(ref: Any, root: Any) -> Any:
     return target
 
 
+SUPPORTED_SCHEMA_KEYWORDS = frozenset({
+    "$ref", "type", "const", "enum", "oneOf", "anyOf", "allOf", "properties",
+    "required", "additionalProperties", "items", "additionalItems", "minItems",
+    "maxItems", "uniqueItems", "minLength", "maxLength", "pattern", "minimum",
+    "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+})
+UNSUPPORTED_SCHEMA_KEYWORDS = frozenset({
+    "format", "not", "if", "then", "else", "patternProperties", "propertyNames",
+    "dependencies", "dependentSchemas", "contains", "minContains", "maxContains",
+    "minProperties", "maxProperties", "unevaluatedProperties", "unevaluatedItems",
+    "prefixItems", "contentEncoding", "contentMediaType", "contentSchema", "nullable",
+    "readOnly", "writeOnly",
+})
+_SCHEMA_ANNOTATIONS = frozenset({
+    "_name_", "_required_", "_attrs_order_", "title", "description", "default",
+    "example", "examples", "deprecated", "$comment", "$id", "$schema", "discriminator",
+})
+
+
+def normalize_schema_contract(schema: Any, path: str = "argument") -> dict[str, Any]:
+    """Return a constraint-only schema shape, rejecting unsupported keywords."""
+    if not isinstance(schema, dict):
+        raise SchemaError(f"{path}: middleware schema node is malformed")
+    unsupported = sorted(set(schema) & UNSUPPORTED_SCHEMA_KEYWORDS)
+    if unsupported:
+        raise SchemaError(f"{path}: unsupported middleware schema keyword {unsupported[0]!r}")
+    unknown = sorted(set(schema) - SUPPORTED_SCHEMA_KEYWORDS - _SCHEMA_ANNOTATIONS)
+    if unknown:
+        raise SchemaError(f"{path}: unrecognized middleware schema keyword {unknown[0]!r}")
+
+    normalized: dict[str, Any] = {}
+    for keyword in sorted(set(schema) & SUPPORTED_SCHEMA_KEYWORDS):
+        value = schema[keyword]
+        if keyword == "properties":
+            if not isinstance(value, dict):
+                raise SchemaError(f"{path}: middleware properties schema is malformed")
+            normalized[keyword] = {
+                name: normalize_schema_contract(child, f"{path}.{keyword}.{name}")
+                for name, child in value.items()
+            }
+        elif keyword in {"items", "additionalItems", "additionalProperties"} and isinstance(value, dict):
+            normalized[keyword] = normalize_schema_contract(value, f"{path}.{keyword}")
+        elif keyword == "items" and isinstance(value, list):
+            normalized[keyword] = [
+                normalize_schema_contract(child, f"{path}.{keyword}[{index}]")
+                for index, child in enumerate(value)
+            ]
+        elif keyword == "additionalItems" and isinstance(value, list):
+            raise SchemaError(f"{path}: middleware additionalItems definition is malformed")
+        elif keyword in {"items", "additionalItems", "additionalProperties"} and type(value) is bool:
+            normalized[keyword] = value
+        elif keyword in {"items", "additionalItems", "additionalProperties"}:
+            raise SchemaError(f"{path}: middleware {keyword} definition is malformed")
+        elif keyword in {"oneOf", "anyOf", "allOf"}:
+            if not isinstance(value, list) or not value:
+                raise SchemaError(f"{path}: middleware {keyword} definition is malformed")
+            normalized[keyword] = [
+                normalize_schema_contract(child, f"{path}.{keyword}[{index}]")
+                for index, child in enumerate(value)
+            ]
+        elif keyword == "required":
+            if not isinstance(value, list) or any(not isinstance(name, str) for name in value):
+                raise SchemaError(f"{path}: middleware required list is malformed")
+            if len(set(value)) != len(value):
+                raise SchemaError(f"{path}: middleware required list contains duplicates")
+            normalized[keyword] = sorted(value)
+        elif keyword == "type":
+            choices = value if isinstance(value, list) else [value]
+            valid_types = {"object", "array", "string", "integer", "number", "boolean", "null"}
+            if not choices or any(not isinstance(kind, str) or kind not in valid_types for kind in choices):
+                raise SchemaError(f"{path}: middleware type definition is malformed")
+            normalized[keyword] = value
+        elif keyword == "enum":
+            if not isinstance(value, list):
+                raise SchemaError(f"{path}: middleware enum is malformed")
+            normalized[keyword] = value
+        elif keyword == "$ref":
+            if not isinstance(value, str) or not value.startswith("#/"):
+                raise SchemaError(f"{path}: unresolved or unsupported middleware schema reference")
+            normalized[keyword] = value
+        elif keyword == "pattern":
+            if not isinstance(value, str):
+                raise SchemaError(f"{path}: middleware pattern is malformed")
+            try:
+                re.compile(value)
+            except re.error as exc:
+                raise SchemaError(f"{path}: middleware pattern is malformed") from exc
+            normalized[keyword] = value
+        elif keyword in {"minItems", "maxItems", "minLength", "maxLength"}:
+            if type(value) is not int or value < 0:
+                raise SchemaError(f"{path}: middleware {keyword} bound is malformed")
+            normalized[keyword] = value
+        elif keyword in {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"}:
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise SchemaError(f"{path}: middleware {keyword} bound is malformed")
+            if keyword == "multipleOf" and value <= 0:
+                raise SchemaError(f"{path}: middleware multipleOf bound must be positive")
+            normalized[keyword] = value
+        elif keyword == "uniqueItems":
+            if type(value) is not bool:
+                raise SchemaError(f"{path}: middleware uniqueItems value is malformed")
+            normalized[keyword] = value
+        else:
+            normalized[keyword] = value
+    if "_name_" in schema:
+        if not isinstance(schema["_name_"], str):
+            raise SchemaError(f"{path}: middleware argument name is malformed")
+        normalized["_name_"] = schema["_name_"]
+    if "_required_" in schema:
+        if type(schema["_required_"]) is not bool:
+            raise SchemaError(f"{path}: middleware required marker is malformed")
+        normalized["_required_"] = schema["_required_"]
+    for minimum, maximum in (("minItems", "maxItems"), ("minLength", "maxLength")):
+        if minimum in normalized and maximum in normalized and normalized[minimum] > normalized[maximum]:
+            raise SchemaError(f"{path}: middleware {minimum}/{maximum} bounds are contradictory")
+    if "minimum" in normalized and "maximum" in normalized and normalized["minimum"] > normalized["maximum"]:
+        raise SchemaError(f"{path}: middleware minimum/maximum bounds are contradictory")
+    if "discriminator" in schema:
+        discriminator = schema["discriminator"]
+        if not isinstance(discriminator, dict) or not isinstance(discriminator.get("propertyName"), str):
+            raise SchemaError(f"{path}: middleware discriminator is malformed")
+        mapping = discriminator.get("mapping", {})
+        if not isinstance(mapping, dict) or any(not isinstance(key, str) or not isinstance(ref, str) for key, ref in mapping.items()):
+            raise SchemaError(f"{path}: middleware discriminator mapping is malformed")
+        normalized["discriminator"] = {
+            "propertyName": discriminator["propertyName"],
+            "mapping": dict(sorted(mapping.items())),
+        }
+    return normalized
+
+
+def normalize_method_contract(metadata: Any, method: str) -> dict[str, Any]:
+    """Normalize accepted request schemas and local definitions for comparison."""
+    accepts = _accepted_args(metadata, method)
+    normalized: dict[str, Any] = {
+        "accepts": [normalize_schema_contract(item, f"{method}.accepts[{index}]") for index, item in enumerate(accepts)]
+    }
+    if not isinstance(metadata, dict):
+        raise SchemaError(f"runtime schema for {method} is missing or malformed")
+    for key in ("$defs", "definitions"):
+        definitions = metadata.get(key)
+        if definitions is not None:
+            if not isinstance(definitions, dict):
+                raise SchemaError(f"runtime schema for {method} has malformed {key}")
+            normalized[key] = {
+                name: normalize_schema_contract(item, f"{method}.{key}.{name}")
+                for name, item in definitions.items()
+            }
+    return normalized
+
+
 def schema_errors(value: Any, schema: Any, path: str = "argument", root: Any = None) -> list[str]:
     """Return payload errors for the supported middleware-schema subset."""
     if not isinstance(schema, dict):
         return [f"{path}: middleware schema node is malformed"]
+    unsupported = sorted(set(schema) & UNSUPPORTED_SCHEMA_KEYWORDS)
+    if unsupported:
+        return [f"{path}: unsupported middleware schema keyword {unsupported[0]!r}"]
+    unknown = sorted(set(schema) - SUPPORTED_SCHEMA_KEYWORDS - _SCHEMA_ANNOTATIONS)
+    if unknown:
+        return [f"{path}: unrecognized middleware schema keyword {unknown[0]!r}"]
     root = schema if root is None else root
     if "$ref" in schema:
         try:
@@ -114,7 +271,9 @@ def schema_errors(value: Any, schema: Any, path: str = "argument", root: Any = N
                     errors.append(f"{path}[{index}]: duplicate array item")
                     break
         items = schema.get("items")
-        if isinstance(items, dict):
+        if items is False and value:
+            errors.append(f"{path}: array items are not accepted")
+        elif isinstance(items, dict):
             for index, item in enumerate(value):
                 errors.extend(schema_errors(item, items, f"{path}[{index}]", root))
         elif isinstance(items, list):
@@ -172,7 +331,9 @@ def validate_method_request(methods: Any, method: str, params: Any) -> None:
         raise SchemaError("runtime methods or method name is malformed")
     if not isinstance(params, list):
         raise SchemaError(f"request for {method} must use a positional parameter list")
-    accepts = _accepted_args(methods.get(method), method)
+    metadata = methods.get(method)
+    normalize_method_contract(metadata, method)
+    accepts = _accepted_args(metadata, method)
     if len(params) > len(accepts):
         raise SchemaError(f"request for {method} has too many positional arguments")
     metadata = methods[method]

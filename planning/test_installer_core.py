@@ -108,6 +108,27 @@ class MiddlewareSchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(schema.SchemaError, "outside middleware bounds"):
             schema.validate_method_request(refs, "m", [3])
 
+    def test_schema_validator_rejects_unsupported_assertions_even_in_optional_fields(self):
+        self.assertEqual(
+            schema.normalize_schema_contract({"type": "string", "title": "Name", "maxLength": 20}),
+            {"type": "string", "maxLength": 20},
+        )
+        for keyword in ("format", "not", "patternProperties", "minProperties", "if", "nullable"):
+            with self.subTest(keyword=keyword):
+                self.assertTrue(schema.schema_errors("x", {"type": "string", keyword: {}}))
+        methods = {"m": {"accepts": [{"type": "object", "properties": {
+            "unused": {"type": "string", "format": "hostname"},
+        }}]}}
+        with self.assertRaisesRegex(schema.SchemaError, "unsupported middleware schema keyword 'format'"):
+            schema.validate_method_request(methods, "m", [{}])
+        for malformed in (
+            {"type": ["string", "invalid"]},
+            {"pattern": "["},
+            {"type": "array", "additionalItems": []},
+        ):
+            with self.subTest(malformed=malformed), self.assertRaises(schema.SchemaError):
+                schema.normalize_schema_contract(malformed)
+
     def test_array_and_numeric_bounds_are_checked(self):
         rules = {"type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": True,
                  "items": {"type": "integer", "minimum": 0, "multipleOf": 2}}
