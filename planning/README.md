@@ -46,7 +46,7 @@ The first profile is pinned to Canonical's latest dated Ubuntu 26.04 LTS release
 
 Provisioning uses cloud-init's NoCloud datasource: `user-data` plus `meta-data` on CIDATA-labeled ISO media created with `cloud-localds`; the seed metadata sets `dsmode: local` so the datasource does not depend on guest networking. The seed helper accepts validated OpenSSH public keys only, locks the created account's password, disables SSH password authentication and root login, and never accepts private keys or passwords. It invokes `cloud-localds` without a shell, stages seed files in a mode-0700 directory, uses mode-0600 files, bounds execution time, and refuses output overwrite. A real local seed build succeeded using Debian tools extracted only into private scratch (no system packages installed); `isoinfo` reported volume ID `cidata` and both NoCloud files. The key used was a synthetic, nonfunctional test value, not a login credential. No TrueNAS device was created and no guest consumed the ISO. Future host preflight must verify required utilities are present; it must not install packages automatically.
 
-The sanitized `TrueNAS-26.0.0-BETA.2` request-schema fixture includes a `CDROM` device variant with a `path` property. That is accepted-request-schema evidence only; it does not establish write acceptance, boot order, successful ISO attachment, or guest behavior. All four distro profiles remain experimental; no live installer, TrueNAS writes, VM boot, console, network, or first-boot validation has occurred.
+The sanitized `TrueNAS-26.0.0-BETA.2` request-schema fixture includes a `CDROM` device variant with a `path` property and, from a later operator-provided read-only capture, the `vm.device.convert` request/return contract. The fixture now contains 20 selected method contracts. The earlier operator report compared 19 contracts; the new conversion contract has not yet been runtime-compared by the compatibility probe. These are schema-evidence updates only: no conversion method was called, and they do not establish write acceptance, boot order, successful ISO attachment, image conversion, or guest behavior. All four distro profiles remain experimental; no live installer, TrueNAS writes, VM boot, console, network, or first-boot validation has occurred.
 
 Official references: [Ubuntu cloud images](https://cloud-images.ubuntu.com/releases/server/26.04/release-20261016/), [Ubuntu cloud-image signature verification](https://ubuntu.com/docs/public-images/public-images-how-to/verify-image-checksum/), [cloud-init NoCloud datasource](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html), and [Canonical cloud-utils](https://github.com/canonical/cloud-utils/blob/main/bin/cloud-localds).
 
@@ -68,9 +68,9 @@ VM request will be accepted or that a guest can boot.
 
 An operator-provided capture for `TrueNAS-26.0.0-BETA.2` was reduced to a
 sanitized fixture at `fixtures/truenas-26.0.0-beta.2-method-contracts.json`.
-It contains normalized accepted-request and return-schema constraints for the 19
-selected methods; descriptions, examples, defaults, and other descriptive
-metadata are omitted. The raw capture is not in the repository. The bounded
+It now contains normalized accepted-request and return-schema constraints for 20
+selected methods, including `vm.device.convert`; descriptive metadata is omitted
+from the schema fixture. The raw capture is not in the repository. The bounded
 validator rejects unsupported schema assertions instead of silently ignoring them.
 
 On a host running that exact build, this optional probe re-reads only
@@ -80,16 +80,7 @@ On a host running that exact build, this optional probe re-reads only
 python3 planning/verify_compatibility.py
 ```
 
-A build mismatch stops before querying method schemas.
-An operator-provided report dated 2026-10-21 records that the probe matched
-all 19 selected request and return schema contracts on the exact Beta.2 build.
-It called only `system.version` and `core.get_methods`; no write methods were
-called. A pass establishes only schema metadata compatibility; it does not prove
-TrueNAS accepts a write, validate runtime response data, or validate VM boot.
-Do not use this Beta fixture as evidence for another TrueNAS build. The next
-read-only capture request also includes `vm.device.convert` metadata so its
-availability and schema can be reviewed; capture still calls only
-`system.version` and `core.get_methods` and never invokes conversion.
+A build mismatch stops before querying method schemas. An operator-provided report dated 2026-10-21 records that the earlier probe matched all 19 then-selected request and return schema contracts on the exact Beta.2 build. It called only `system.version` and `core.get_methods`; no write methods were called. The fixture now includes a 20th contract for `vm.device.convert`, based on a later exact-build capture; rerun this probe from the reviewed checkout to compare all 20 contracts. A pass establishes only schema metadata compatibility; it does not prove TrueNAS accepts a write, validate runtime response data, or validate VM boot. Do not use this Beta fixture as evidence for another TrueNAS build. The capture inspects conversion metadata only and never invokes conversion.
 
 The examples are fictional. Copy and edit them locally rather than committing
 your host's inventory. The preview command reads only the files you explicitly

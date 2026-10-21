@@ -1,6 +1,6 @@
 {
   "format": "truenas-method-contract-fixture-v1",
-  "method_count": 19,
+  "method_count": 20,
   "method_semantics": {
     "pool.query.free": {
       "truenas_version": "TrueNAS-26.0.0-BETA.2",
@@ -8478,6 +8478,41 @@
             "status"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "vm.device.convert": {
+      "accepts": [
+        {
+          "_name_": "vm_convert",
+          "_required_": true,
+          "additionalProperties": false,
+          "properties": {
+            "destination": {
+              "_name_": "destination",
+              "_required_": true,
+              "minLength": 1,
+              "type": "string"
+            },
+            "source": {
+              "_name_": "source",
+              "_required_": true,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "source",
+            "destination"
+          ],
+          "type": "object"
+        }
+      ],
+      "returns": [
+        {
+          "_name_": "result",
+          "_required_": true,
+          "type": "boolean"
         }
       ]
     },
