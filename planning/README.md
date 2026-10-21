@@ -18,6 +18,7 @@ From the repository root:
 ```sh
 python3 planning/preview.py --config planning/examples/vm.json
 python3 planning/preview.py --config planning/examples/vm.json --inventory planning/examples/inventory.json
+python3 planning/preview.py --interactive --inventory planning/examples/inventory.json
 python3 -m unittest discover -s planning -p 'test_*.py' -v
 ```
 
@@ -31,11 +32,24 @@ The port includes mocked tests and keeps the upstream MIT notice in this repo's
 `LICENSE` file. See `docs/installer-core-provenance.md` for boundaries and source
 revision.
 
-These helpers are infrastructure only. They are not called by an install flow;
-no live installer entry point or guest provisioning path exists. The HAOS release
-metadata, HAOS disk/firmware assumptions, defaults, and installer flow were not
-copied. Linux artifact URLs, checksums, image formats, boot settings, and
-provisioning must be defined and validated per distro profile before reuse.
+These helpers are infrastructure only and are not wired into a live install flow. The Ubuntu Server-specific module at `ubuntu_server.py` pins one official amd64 image, delegates explicit downloads to the generic HTTPS/size/SHA-256 verifier, builds key-only cloud-config and NoCloud metadata, and can generate seed media through `cloud-localds`. The preview displays only static metadata: it does not download an image, create seed media, make middleware calls, or write files. No image import/convert or VM-creation path exists.
+
+## Ubuntu Server profile (experimental)
+
+The first profile is pinned to Canonical's latest dated Ubuntu 26.04 LTS release directory observed on 2026-10-21, `release-20261016` (the manifest and image were last modified on 2026-10-20):
+
+- Artifact: `ubuntu-26.04-server-cloudimg-amd64.img`
+- SHA-256 from the official signed `SHA256SUMS`: `5645d0318ad21f643ebb1ac4567514620e9893380b07b0201fda163baa5b7eb5`
+- Expected size: `859090944` bytes
+- The detached signature was checked against Ubuntu's documented cloud-image signing key fingerprint `D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81`. The verifier used for this check did not assess revocation or self-signature status; do not describe it as a complete GnuPG keyring audit. Runtime downloads use the fixed URL, digest, and exact-size check; the raw checksum/signature files are not included.
+- The exact downloaded artifact passed the existing pinned size/SHA-256 verifier. On that file, `qemu-img info --output=json` reported `format: qcow2`, `virtual-size: 3758096384`, no backing file, and `dirty-flag: false`; `qemu-img check -f qcow2` reported no errors. A scratch-only `qemu-img convert` to raw also completed with the same virtual size (819,237,376 bytes actual allocation). This supports a future QCOW2-to-raw workflow, but no conversion helper or TrueNAS import path is implemented; it does not validate TrueNAS behavior or guest boot.
+
+Provisioning uses cloud-init's NoCloud datasource: `user-data` plus `meta-data` on CIDATA-labeled ISO media created with `cloud-localds`; the seed metadata sets `dsmode: local` so the datasource does not depend on guest networking. The seed helper accepts validated OpenSSH public keys only, locks the created account's password, disables SSH password authentication and root login, and never accepts private keys or passwords. It invokes `cloud-localds` without a shell, stages seed files in a mode-0700 directory, uses mode-0600 files, bounds execution time, and refuses output overwrite. A real local seed build succeeded using Debian tools extracted only into private scratch (no system packages installed); `isoinfo` reported volume ID `cidata` and both NoCloud files. The key used was a synthetic, nonfunctional test value, not a login credential. No TrueNAS device was created and no guest consumed the ISO. Future host preflight must verify required utilities are present; it must not install packages automatically.
+
+The sanitized `TrueNAS-26.0.0-BETA.2` request-schema fixture includes a `CDROM` device variant with a `path` property. That is accepted-request-schema evidence only; it does not establish write acceptance, boot order, successful ISO attachment, or guest behavior. All four distro profiles remain experimental; no live installer, TrueNAS writes, VM boot, console, network, or first-boot validation has occurred.
+
+Official references: [Ubuntu cloud images](https://cloud-images.ubuntu.com/releases/server/26.04/release-20261016/), [Ubuntu cloud-image signature verification](https://ubuntu.com/docs/public-images/public-images-how-to/verify-image-checksum/), [cloud-init NoCloud datasource](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html), and [Canonical cloud-utils](https://github.com/canonical/cloud-utils/blob/main/bin/cloud-localds).
+
 
 For the separately authorized local schema snapshot, run this from the TrueNAS
 host shell (not from an ordinary development machine):
@@ -76,6 +90,14 @@ The examples are fictional. Copy and edit them locally rather than committing
 your host's inventory. The preview command reads only the files you explicitly
 supply and prints the plan to stdout. Invalid input produces an error on stderr
 and exit status 2; a successful preview returns 0. Success is not permission to install.
+
+## Interactive choices (offline preview only)
+
+Run `python3 planning/preview.py --interactive` to collect choices without touching TrueNAS. If `--profile` is omitted, the numbered menu lists Ubuntu Server, Ubuntu Desktop, Debian Server, and Debian Desktop; all are labeled experimental. `--profile ubuntu-server` (or another listed ID) selects a profile without showing the profile menu. The same `--profile` option overrides the profile in `--config` mode.
+
+The prompts collect a VM name, storage pool, existing network bridge, total vCPUs, RAM MiB, and virtual-disk size GiB. With `--inventory`, pools and bridges are shown as numbered choices from that supplied snapshot; the inventory can be stale. Without it, the pool and bridge are typed manually and the preview marks them unchecked.
+
+Storage selection is by **ZFS pool**, not an individual physical drive: the proposed path is `<pool>/linux-vms/<name>/disk0`. The future installer must create a per-VM dataset/zvol only after a fresh live preflight confirms the selected pool is healthy, writable, and has sufficient capacity. Network selection is an **existing bridge**; this planner will not create or alter bridges, VLANs, routes, or host networking. It does not set a guest IP or validate guest networking. The plan keeps the VM stopped and autostart disabled. CPU, RAM, and disk bounds are planner input limits, not host-capacity or guest-support guarantees; this remains a JSON preview, not an installer.
 
 ## Config format
 

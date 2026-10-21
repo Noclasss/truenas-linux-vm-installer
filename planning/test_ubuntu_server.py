@@ -1,0 +1,240 @@
+import base64
+import json
+import os
+import stat
+import struct
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+from planning.ubuntu_server import (
+    ARTIFACT_MAX_BYTES,
+    ARTIFACT_SHA256,
+    ARTIFACT_SIZE_BYTES,
+    ARTIFACT_URL,
+    PROFILE_STATUS,
+    ProfileValidationError,
+    SeedImageError,
+    artifact_metadata,
+    build_cloud_config,
+    build_meta_data,
+    build_seed_iso,
+    download_ubuntu_server_image,
+)
+
+
+def dummy_public_key(key_type="ssh-ed25519"):
+    """Build a structurally plausible but nonfunctional OpenSSH public key."""
+    blob = struct.pack(">I", len(key_type)) + key_type.encode("ascii") + b"test-key-material"
+    return f"{key_type} {base64.b64encode(blob).decode('ascii')} test-only"
+
+
+def mapping_keys(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield key
+            yield from mapping_keys(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from mapping_keys(child)
+
+
+class UbuntuServerProfileTests(unittest.TestCase):
+    def test_image_pin_and_verified_qcow2_metadata(self):
+        metadata = artifact_metadata()
+        self.assertEqual(PROFILE_STATUS, "experimental")
+        self.assertEqual(metadata["url"], ARTIFACT_URL)
+        self.assertIn("release-20261016", ARTIFACT_URL)
+        self.assertEqual(metadata["sha256"], ARTIFACT_SHA256)
+        self.assertEqual(metadata["size_bytes"], ARTIFACT_SIZE_BYTES)
+        self.assertEqual(ARTIFACT_MAX_BYTES, ARTIFACT_SIZE_BYTES)
+        self.assertEqual(metadata["image_format"], "qcow2")
+        self.assertEqual(metadata["image_virtual_size_bytes"], 3_758_096_384)
+        self.assertIn("verified with qemu-img", str(metadata["image_format_status"]))
+        self.assertEqual(ARTIFACT_URL, "https://cloud-images.ubuntu.com/releases/server/26.04/release-20261016/ubuntu-26.04-server-cloudimg-amd64.img")
+        self.assertEqual(ARTIFACT_SHA256, "5645d0318ad21f643ebb1ac4567514620e9893380b07b0201fda163baa5b7eb5")
+        self.assertEqual(ARTIFACT_SIZE_BYTES, 859_090_944)
+        self.assertEqual(len(ARTIFACT_SHA256), 64)
+
+    def test_download_wrapper_uses_static_pin_without_network_in_test(self):
+        with tempfile.TemporaryDirectory() as directory:
+            expected = Path(directory) / "verified.img"
+            with patch("planning.ubuntu_server.download_and_verify", return_value=expected) as download:
+                result = download_ubuntu_server_image(Path(directory) / "cache")
+        self.assertEqual(result, expected)
+        download.assert_called_once_with(
+            url=ARTIFACT_URL,
+            sha256=ARTIFACT_SHA256,
+            cache_dir=Path(directory) / "cache",
+            max_bytes=ARTIFACT_MAX_BYTES,
+            expected_size=ARTIFACT_SIZE_BYTES,
+        )
+
+    def test_user_data_locks_password_and_uses_only_authorized_public_keys(self):
+        key = dummy_public_key()
+        rendered = build_cloud_config("alice", [key])
+        self.assertTrue(rendered.startswith("#cloud-config\n"))
+        config = json.loads(rendered.split("\n", 1)[1])
+        self.assertTrue(config["disable_root"])
+        self.assertFalse(config["ssh_pwauth"])
+        user = next(value for value in config["users"] if isinstance(value, dict))
+        self.assertEqual(user["name"], "alice")
+        self.assertTrue(user["lock_passwd"])
+        self.assertEqual(user["ssh_authorized_keys"], [key])
+        self.assertIn("sudo", user["groups"])
+        self.assertEqual(user["sudo"], "ALL=(ALL) NOPASSWD:ALL")
+        forbidden = {"password", "passwd", "chpasswd", "ssh_private_key", "ssh_private_keys"}
+        self.assertFalse(forbidden.intersection(mapping_keys(config)))
+        self.assertNotIn("PRIVATE KEY", rendered)
+
+    def test_user_data_rejects_unsafe_usernames_and_key_material(self):
+        key = dummy_public_key()
+        for username in ("root", "ubuntu", "Alice", "-bad", "bad;name", "a" * 33, ""):
+            with self.subTest(username=username), self.assertRaises(ProfileValidationError):
+                build_cloud_config(username, [key])
+        for invalid in (
+            "ssh-ed25519 not-base64",
+            "ssh-ed25519 YWJj",
+            "ssh-rsa AAAA",
+            "-----BEGIN OPENSSH PRIVATE KEY-----",
+            key + "\nssh-ed25519 AAAA",
+            " " + key,
+            "ssh-ed25519 " + base64.b64encode(b"wrong key type").decode("ascii"),
+        ):
+            with self.subTest(key=invalid), self.assertRaises(ProfileValidationError):
+                build_cloud_config("alice", [invalid])
+        with self.assertRaises(ProfileValidationError):
+            build_cloud_config("alice", [])
+        with self.assertRaises(ProfileValidationError):
+            build_cloud_config("alice", [key, key])
+
+    def test_meta_data_is_deterministic_and_safe(self):
+        first = build_meta_data("My_VM-1")
+        second = build_meta_data("My_VM-1")
+        self.assertEqual(first, second)
+        metadata = json.loads(first)
+        self.assertEqual(metadata["dsmode"], "local")
+        self.assertTrue(metadata["instance-id"].startswith("truenas-"))
+        self.assertEqual(metadata["local-hostname"], "my-vm-1")
+        with self.assertRaises(ProfileValidationError):
+            build_meta_data("../unsafe")
+
+    def test_seed_builder_uses_private_files_and_exact_cloud_localds_args(self):
+        key = dummy_public_key()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "seed.iso"
+            observed = {}
+
+            def fake_runner(args, **kwargs):
+                observed["args"] = args
+                observed["kwargs"] = kwargs
+                seed_path = Path(args[5])
+                user_data_path = Path(args[6])
+                meta_data_path = Path(args[7])
+                observed["user_data"] = user_data_path.read_text(encoding="utf-8")
+                observed["meta_data"] = meta_data_path.read_text(encoding="utf-8")
+                observed["user_mode"] = stat.S_IMODE(user_data_path.stat().st_mode)
+                observed["meta_mode"] = stat.S_IMODE(meta_data_path.stat().st_mode)
+                observed["stage_mode"] = stat.S_IMODE(user_data_path.parent.stat().st_mode)
+                seed_path.write_bytes(b"mocked-iso-image")
+                return subprocess.CompletedProcess(args, 0)
+
+            result = build_seed_iso(
+                output,
+                vm_name="test-vm",
+                username="alice",
+                ssh_authorized_keys=[key],
+                runner=fake_runner,
+            )
+            self.assertEqual(result, output)
+            self.assertEqual(output.read_bytes(), b"mocked-iso-image")
+            self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+
+        self.assertEqual(
+            observed["args"][1:5],
+            ["--disk-format", "raw", "--filesystem", "iso"],
+        )
+        self.assertEqual(observed["args"][0], "cloud-localds")
+        self.assertEqual(observed["user_mode"], 0o600)
+        self.assertEqual(observed["meta_mode"], 0o600)
+        self.assertEqual(observed["stage_mode"], 0o700)
+        self.assertEqual(observed["kwargs"]["timeout"], 60)
+        self.assertTrue(observed["kwargs"]["check"])
+        self.assertTrue(observed["kwargs"]["capture_output"])
+        self.assertEqual(observed["kwargs"]["env"]["TMPDIR"], observed["args"][6].rsplit("/", 1)[0])
+        self.assertIn("#cloud-config", observed["user_data"])
+        self.assertEqual(json.loads(observed["meta_data"])["local-hostname"], "test-vm")
+
+    def test_seed_builder_refuses_overwrite_before_running_tool(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "seed.iso"
+            output.write_bytes(b"keep")
+            runner = Mock()
+            with self.assertRaises(SeedImageError):
+                build_seed_iso(output, "test-vm", "alice", [dummy_public_key()], runner=runner)
+            runner.assert_not_called()
+            self.assertEqual(output.read_bytes(), b"keep")
+
+    def test_seed_builder_suppresses_tool_error_output_and_cleans_staging(self):
+        key = dummy_public_key()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "seed.iso"
+            leaked = "TEST-ONLY-PUBLIC-KEY-DETAIL"
+
+            def failed_runner(args, **kwargs):
+                Path(args[5]).write_bytes(b"partial")
+                raise subprocess.CalledProcessError(1, args, stderr=leaked)
+
+            with self.assertRaises(SeedImageError) as error:
+                build_seed_iso(
+                    output,
+                    "test-vm",
+                    "alice",
+                    [key],
+                    runner=failed_runner,
+                )
+            self.assertNotIn(leaked, str(error.exception))
+            self.assertFalse(output.exists())
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_seed_builder_times_out_cleanly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "seed.iso"
+            def timeout_runner(args, **kwargs):
+                raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+            with self.assertRaisesRegex(SeedImageError, "timed out"):
+                build_seed_iso(output, "test-vm", "alice", [dummy_public_key()], runner=timeout_runner)
+            self.assertFalse(output.exists())
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_seed_builder_rejects_missing_or_invalid_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for behavior in ("missing", "empty", "symlink"):
+                output = Path(directory) / f"{behavior}.iso"
+                def runner(args, **kwargs):
+                    path = Path(args[5])
+                    if behavior == "empty":
+                        path.write_bytes(b"")
+                    elif behavior == "symlink":
+                        path.symlink_to(Path(directory) / "outside")
+                    return subprocess.CompletedProcess(args, 0)
+                with self.subTest(behavior=behavior), self.assertRaises(SeedImageError):
+                    build_seed_iso(output, "test-vm", "alice", [dummy_public_key()], runner=runner)
+                self.assertFalse(output.exists())
+
+    def test_seed_builder_handles_missing_tool_without_leaking_contents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "seed.iso"
+            def missing_tool(*args, **kwargs):
+                raise FileNotFoundError("cloud-localds not installed")
+            with self.assertRaises(SeedImageError) as error:
+                build_seed_iso(output, "test-vm", "alice", [dummy_public_key()], runner=missing_tool)
+            self.assertNotIn("not installed", str(error.exception))
+            self.assertFalse(output.exists())
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+
+if __name__ == "__main__":
+    unittest.main()
