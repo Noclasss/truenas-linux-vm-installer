@@ -19,7 +19,7 @@
 | Ubuntu Server preparation | Pinned official Ubuntu 26.04 LTS amd64 cloud image passed exact-size/SHA-256 and QCOW2 checks. Offline NoCloud seed helper built and inspected a local CIDATA ISO using a synthetic test key. A scratch conversion to raw succeeded. | No packaged conversion helper, TrueNAS import, zvol population, boot, or first-boot validation. |
 | Mock orchestration | Stateful fake rehearses dataset/zvol, stopped VM, device sequencing, manifest and read-back, using sanitized fixture constraints. Failure cases avoid retry and automatic cleanup. | Fake-only; no `midclt`, downloads, storage writes, or live resource creation. |
 | TrueNAS compatibility | Sanitized request and return schema constraints for 19 selected methods from `TrueNAS-26.0.0-BETA.2`; bounded fail-closed validator and optional read-only comparison probe. | Operator report covers the earlier request-only probe. The newer request-plus-return comparison still needs an operator run on that exact build. Schema matches do not prove write acceptance. |
-| CI | Workflow discovers all `planning/test_*.py`, compiles the package, previews the example, and checks whitespace. The last confirmed 68-test result was on head `24849b41722b5e9c4ab68cfe20c2abec245979ee`. | Later Ubuntu-profile and return-schema commits add tests; confirm hosted checks for the current PR head before calling that head green. |
+| CI | Hosted run [39598469135](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39598469135) passed all 104 unit tests, compilation, preview, and whitespace checks on code head `083f66793a047caed4158d9ff249c8f77dd527ca`. | A documentation-only follow-up does not change code coverage or establish live compatibility. |
 
 ## Next work, in order
 
