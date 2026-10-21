@@ -247,6 +247,17 @@ class ArtifactDownloadTests(unittest.TestCase):
         def geturl(self):
             return self.url
 
+    def test_existing_nonprivate_cache_is_rejected_without_changing_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / "shared"
+            cache.mkdir(mode=0o755)
+            cache.chmod(0o755)
+            original_mode = stat.S_IMODE(cache.stat().st_mode)
+            with self.assertRaisesRegex(artifacts.ArtifactError, "refusing to change existing directory permissions"):
+                artifacts.ensure_private_cache_dir(cache)
+            self.assertEqual(stat.S_IMODE(cache.stat().st_mode), original_mode)
+            self.assertEqual(original_mode, 0o755)
+
     def test_valid_digest_and_size_downloaded_to_private_cache(self):
         data = b"verified artifact"
         digest = hashlib.sha256(data).hexdigest()
