@@ -2,7 +2,12 @@
 
 **Current state (2026-10-21):** an experimental offline planner, tested reusable safety helpers, Ubuntu Server artifact/NoCloud preparation, and mock-only orchestration with an in-memory fresh-zvol image-import model. There is no live installer. No Linux VM has been created by this repository.
 
-**GitHub merge status verified 2026-10-21:** stacked PR #3 (`fix/readonly-preflight-memory-units` → `feat/multi-distro-installer`) was squash-merged as `4ddf0b79a9c62658fc6aeabe88b1adafe860d004`; PR #2 (`feat/multi-distro-installer` → `main`) was then squash-merged as `f40ca4c8cd520a6cbae0d9732cb43e9d59a16dc4`. Documentation PR #5 was squash-merged as `5393a2fea8d32fe896bfcc54163183fd4834c074`, the current `main` head. Latest main push run `39656161788` succeeded; hosted test count was not independently retrieved. These merges do not establish live TrueNAS behavior.
+**GitHub status verified 2026-10-21:** PR #3 was squash-merged into `feat/multi-distro-installer` as `4ddf0b79a9c62658fc6aeabe88b1adafe860d004`; PR #2 was then squash-merged into `main` as `f40ca4c8cd520a6cbae0d9732cb43e9d59a16dc4`; documentation PR #5 was merged as `5393a2fea8d32fe896bfcc54163183fd4834c074`, the current `main` head. Latest main push run `39656161788` succeeded; hosted test count is unknown. PR #6 is open from `feat/mock-fresh-zvol-import` against `main`; its 142-test offline suite passes, but hosted PR checks have not reported a result yet. PR #4 remains open/draft and superseded by #5. None of this establishes live TrueNAS behavior.
+
+## GitHub tracking milestones
+
+- **#1 Offline Mock Review and CI** — assigned to PR #6; no due date. The open PR contains only mock/offline changes and awaits review/hosted checks.
+- **#2 Disposable Validation and Profile Support** — assigned to issue #1; no due date. Requires separate authorization and an isolated disposable target; no live operations are currently authorized.
 
 ## Guardrails
 
@@ -21,7 +26,7 @@
 | Mock orchestration | Stateful fake rehearses the candidate write sequence, including an in-memory `vm.device.convert` model only for a fresh run-owned zvol. It validates the captured request schema, enforces the synthetic source size floor, records pending/acknowledged manifest state, and reconciles ambiguous outcomes as manual-review-only without retry. | Fake-only; no `midclt`, downloads, actual conversion, host storage writes, or live resource creation. |
 | TrueNAS compatibility | Sanitized request and return schema constraints for 20 selected methods from `TrueNAS-26.0.0-BETA.2`; bounded fail-closed validator and optional read-only comparison probe. Operator-provided output for commit `1b10b439f9bf2d10ff1afa0da228b30416043bc9` says all 20 contracts matched using only `system.version` and `core.get_methods`, with no writes. | Schema matches do not prove write acceptance, runtime resource behavior, or guest boot. |
 | Read-only preflight | `planning/readonly_preflight.py` and `planning/check_readonly_preflight.py` verify caller-selected pool, bridge, VM name, resource limits, and exact-build compatibility using only allowlisted reads; reserves are explicit and no resource is selected automatically. Fake-middleware tests cover success and fail-closed gates. | Exact Beta.2 `core.get_methods` metadata describes available memory and pool free space in bytes and VM requested memory in MiB; the fixture pins these units to the build and the preflight fails closed if any are absent or mismatched. Exercised only against fake middleware; no TrueNAS preflight has been run. A pass is not write authorization. |
-| CI | Current `main` `5393a2fea8d32fe896bfcc54163183fd4834c074` passed latest push run [39656161788](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39656161788); hosted test count unknown. This branch passed 142 local tests, compile/CLI/preview checks, `git diff --check`, and targeted secret/private scan; hosted checks are pending. | CI and offline tests do not establish live TrueNAS compatibility or guest behavior. |
+| CI | Current `main` `5393a2fea8d32fe896bfcc54163183fd4834c074` passed latest push run [39656161788](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39656161788); hosted test count unknown. PR #6's branch passed 142 local tests, compile/CLI/preview checks, `git diff --check`, and targeted secret/private scan; hosted PR checks have not reported a result yet. | CI and offline tests do not establish live TrueNAS compatibility or guest behavior. |
 
 ## Next work, in order
 

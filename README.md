@@ -34,10 +34,12 @@ No live Linux VM has been created or validated by this repository. Operator-prov
 ## Merge status (2026-10-21)
 
 - PR #3 (`fix/readonly-preflight-memory-units`) was squash-merged into `feat/multi-distro-installer` as `4ddf0b79a9c62658fc6aeabe88b1adafe860d004`; PR #2 was then squash-merged into `main` as `f40ca4c8cd520a6cbae0d9732cb43e9d59a16dc4`.
-- Documentation PR #5 was squash-merged as `5393a2fea8d32fe896bfcc54163183fd4834c074`, the current `main` head. Its latest push Actions run [39656161788](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39656161788) succeeded; hosted test count is unknown. PR #4 remains open and is marked superseded.
-- This feature branch passes 142 local tests; hosted checks are pending. The earlier 19-method count describes the initial fixture; the operator's exact-build comparison matched all 20 contracts on `TrueNAS-26.0.0-BETA.2`, using only `system.version` and `core.get_methods` and no write methods.
+- Documentation PR #5 was squash-merged as `5393a2fea8d32fe896bfcc54163183fd4834c074`, the current `main` head. Its latest push Actions run [39656161788](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39656161788) succeeded; hosted test count is unknown. PR #4 remains open/draft and is marked superseded by #5.
+- PR #6 (`feat/mock-fresh-zvol-import`) is open against `main` at `5393a2f`. Its full offline suite passes 142 tests; hosted PR checks have not reported a result yet.
+- Milestone #1, **Offline Mock Review and CI**, tracks PR #6. Milestone #2, **Disposable Validation and Profile Support**, tracks issue #1. Neither has a due date; the second remains authorization-gated.
+- The earlier 19-method count describes the initial fixture; the operator's exact-build comparison matched all 20 contracts on `TrueNAS-26.0.0-BETA.2`, using only `system.version` and `core.get_methods` and no write methods.
 
-Merging these PRs does not establish live TrueNAS preflight, write acceptance, VM creation, guest provisioning, or boot validation. The project remains experimental, `LIVE_PROFILE_ALLOWLIST` remains empty, and all four profiles remain experimental.
+The recorded merges and offline checks do not establish live TrueNAS preflight, write acceptance, VM creation, guest provisioning, or boot validation. The project remains experimental, `LIVE_PROFILE_ALLOWLIST` remains empty, and all four profiles remain experimental.
 
 ## Try the offline preview
 
