@@ -2,7 +2,7 @@
 
 **Status:** design and mock-only contract; no production writer exists. `LIVE_PROFILE_ALLOWLIST` remains empty. This document does not authorize TrueNAS writes or a VM boot.
 
-**Schema scope:** sanitized request/return constraints captured for `TrueNAS-26.0.0-BETA.2` in `planning/fixtures/truenas-26.0.0-beta.2-method-contracts.json`. The operator's 2026-10-21 probe checked metadata using only `system.version` and `core.get_methods`; it did not test write acceptance.
+**Schema scope:** the sanitized fixture contains 20 request/return method contracts for `TrueNAS-26.0.0-BETA.2`. The operator-provided compatibility output for commit `1b10b439f9bf2d10ff1afa0da228b30416043bc9` reports all 20 matched using only `system.version` and `core.get_methods`; no write methods were called. This does not test write acceptance.
 
 ## Running the metadata capture from TrueNAS
 
@@ -25,7 +25,7 @@ The following is the complete candidate write set for a future Ubuntu Server cre
 - `vm.create`
 - `vm.device.create`
 
-**Captured but not enabled method:** an operator-provided `core.get_methods` capture for exact build `TrueNAS-26.0.0-BETA.2` includes `vm.device.convert`. It is a job requiring `VM_DEVICE_WRITE`; its single required argument object has non-empty string `source` and `destination` fields, and its result is boolean. The metadata says it converts supported image formats (qcow2, qed, raw, vdi, vhdx, vmdk) to/from ZFS volumes, with direction determined automatically from the file extension. The sanitized request/return contract is now included in the 20-method fixture and tested offline. No conversion call was made. The metadata does not establish exact source/destination direction for a particular path, host path permissions or visibility, successful zvol population, or write acceptance; keep it outside the mock/live write set pending those reviews and a 20-contract runtime comparison. [TrueNAS `vm.device.convert` API reference](https://api.truenas.com/v26.0/api_methods_vm.device.convert.html)
+**Captured but not enabled method:** an operator-provided `core.get_methods` capture for exact build `TrueNAS-26.0.0-BETA.2` includes `vm.device.convert`. It is a job requiring `VM_DEVICE_WRITE`; its single required argument object has non-empty string `source` and `destination` fields, and its result is boolean. The metadata says it converts supported image formats (qcow2, qed, raw, vdi, vhdx, vmdk) to/from ZFS volumes, with direction determined automatically from the file extension. The sanitized request/return contract is included in the 20-method fixture and passed the operator-provided read-only runtime comparison. No conversion call was made. The metadata does not establish exact source/destination direction for a particular path, host path permissions or visibility, successful zvol population, or write acceptance; keep it outside the mock/live write set pending those reviews. [TrueNAS `vm.device.convert` API reference](https://api.truenas.com/v26.0/api_methods_vm.device.convert.html)
 
 Explicitly outside this boundary: `vm.start`, `vm.stop`, `vm.device.delete`, dataset/VM deletion, host networking changes, and automatic rollback. A VM remains stopped and `autostart` remains false. Do not add a method to a live allowlist without a separately reviewed exact-build contract and authorization.
 

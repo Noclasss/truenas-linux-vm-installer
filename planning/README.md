@@ -80,7 +80,7 @@ On a host running that exact build, this optional probe re-reads only
 python3 planning/verify_compatibility.py
 ```
 
-A build mismatch stops before querying method schemas. An operator-provided report dated 2026-10-21 records that the earlier probe matched all 19 then-selected request and return schema contracts on the exact Beta.2 build. It called only `system.version` and `core.get_methods`; no write methods were called. The fixture now includes a 20th contract for `vm.device.convert`, based on a later exact-build capture; rerun this probe from the reviewed checkout to compare all 20 contracts. A pass establishes only schema metadata compatibility; it does not prove TrueNAS accepts a write, validate runtime response data, or validate VM boot. Do not use this Beta fixture as evidence for another TrueNAS build. The capture inspects conversion metadata only and never invokes conversion.
+The exact-build probe output for commit `1b10b439f9bf2d10ff1afa0da228b30416043bc9` matched all 20 request/return schema contracts on Beta.2. It called only `system.version` and `core.get_methods`; no write methods were called. This establishes metadata compatibility only; it does not prove TrueNAS accepts a write, validate runtime response data, or validate VM boot. Do not use this Beta fixture as evidence for another TrueNAS build. The capture inspects conversion metadata only and never invokes conversion.
 
 The examples are fictional. Copy and edit them locally rather than committing
 your host's inventory. The preview command reads only the files you explicitly

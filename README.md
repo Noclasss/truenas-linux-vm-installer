@@ -29,7 +29,7 @@ All profiles are experimental until each has passed automated tests and disposab
 - Leave new VMs powered off unless starting is explicitly requested.
 - Keep install manifests so failed runs can be reconciled safely.
 
-No live Linux VM has been created or validated by this repository. An operator-provided report dated 2026-10-21 records that the read-only compatibility probe matched the 19 request/return schema contracts selected at that time on `TrueNAS-26.0.0-BETA.2`, using only `system.version` and `core.get_methods`; no write methods were called. A later read-only capture supplied the exact-build `vm.device.convert` definition, now included as a 20th sanitized fixture contract; the runtime comparison for all 20 contracts remains pending. These results apply only to that exact build. Schema matching does not establish write acceptance, actual runtime response data, guest boot, or first-boot behavior.
+No live Linux VM has been created or validated by this repository. Operator-provided read-only compatibility output for commit `1b10b439f9bf2d10ff1afa0da228b30416043bc9` records a match for all 20 selected request/return schema contracts on `TrueNAS-26.0.0-BETA.2`, using only `system.version` and `core.get_methods`; no write methods were called. This result applies only to that exact build and fixture. Schema matching does not establish write acceptance, actual runtime response data, guest boot, or first-boot behavior.
 
 ## Try the offline preview
 
