@@ -4,6 +4,19 @@
 
 **Schema scope:** sanitized request/return constraints captured for `TrueNAS-26.0.0-BETA.2` in `planning/fixtures/truenas-26.0.0-beta.2-method-contracts.json`. The operator's 2026-10-21 probe checked metadata using only `system.version` and `core.get_methods`; it did not test write acceptance.
 
+## Running the metadata capture from TrueNAS
+
+The TrueNAS WebUI shell may start in `/var/empty`; the capture script is part of the repository, not a system command. First enter a checkout of the reviewed commit and verify it before running the helper:
+
+```sh
+cd /path/to/truenas-linux-vm-installer
+test "$(git rev-parse HEAD)" = "<reviewed-commit>" || exit 1
+expected_build=$(midclt call system.version) || exit 1
+python3 planning/capture_schema.py --expected-version "$expected_build"
+```
+
+Replace the path and commit placeholder with the actual reviewed checkout and commit. If `cd` or the script path fails, stop: the repository is not checked out at that location. The helper then rechecks the build, calls only `system.version` and `core.get_methods`, and writes a new private capture under `/tmp`; it does not call conversion or any other write method. Keep the raw capture private and do not commit it.
+
 ## Proposed method boundary
 
 The following is the complete candidate write set for a future Ubuntu Server create-only flow. It is exercised only by `MockMiddleware`; none of these methods is enabled for a live profile:
