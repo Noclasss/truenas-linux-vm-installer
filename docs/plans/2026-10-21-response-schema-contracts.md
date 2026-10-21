@@ -1,5 +1,7 @@
 # Exact-Build Middleware Response Contracts Plan
 
+> **Historical plan:** the no-merge instruction below applied to the original task only. PRs #3 and #2 were later explicitly authorized and merged on 2026-10-21. Current status is recorded in the README and implementation roadmap; no live install or boot validation is implied.
+
 > **For Hermes:** Implement this plan with offline tests only. Never invoke TrueNAS methods beyond the already-authorized read-only probe, and do not add a live install path.
 
 **Goal:** Extend the sanitized TrueNAS 26.0.0-BETA.2 compatibility fixture and checker to compare return schemas as well as accepted request schemas, so later preflight/installer code is based on reviewed response contracts.

@@ -1,5 +1,7 @@
 # Ubuntu Server Profile Implementation Plan
 
+> **Historical plan:** written before PRs #3 and #2 were explicitly authorized and merged on 2026-10-21. Its merge restriction records the original task scope; current project status is in the README and implementation roadmap. No live TrueNAS or VM validation has occurred.
+
 > **For Hermes:** Implement this plan with offline tests and spec/quality review. Do not test a live VM.
 
 **Goal:** Pin one official Ubuntu Server LTS cloud image and add a testable NoCloud/cloud-init seed-generation path while the project remains non-installing and experimental.
@@ -20,7 +22,7 @@
 - **Verified locally:** the pinned full image passed the existing exact-size/SHA-256 download verifier; private-scratch `qemu-img info --output=json` reported QCOW2, 3,758,096,384-byte virtual size, no backing file, and clean dirty flag; `qemu-img check` reported no errors. A scratch-only conversion to raw succeeded and preserved virtual size (819,237,376 bytes actual allocation). This still does not validate TrueNAS import behavior or guest boot.
 - **Verified locally:** the real `cloud-localds` helper produced a 374,784-byte ISO with volume ID `cidata` and both NoCloud seed files. It used a synthetic, nonfunctional test key. Debian tools were downloaded and extracted into private scratch; no system packages were installed.
 - **Unverified:** TrueNAS import/write acceptance, disposable VM creation, boot/console, and first-boot provisioning.
-- **Safety:** Do not create/start any VM, call TrueNAS write methods, change host networking, modify an existing VM or storage, merge, deploy, or change `main`. Keep all four distro profiles experimental and PR #2 draft/open.
+- **Historical safety scope:** no VM, TrueNAS write, host-network, existing-resource, or deployment changes were made during this plan. PRs #3 and #2 were later merged by explicit user authorization; all four distro profiles remain experimental.
 
 ## Task 1: Add an Ubuntu Server profile and NoCloud seed builder
 
