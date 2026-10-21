@@ -55,7 +55,7 @@ VM request will be accepted or that a guest can boot.
 An operator-provided capture for `TrueNAS-26.0.0-BETA.2` was reduced to a
 sanitized fixture at `fixtures/truenas-26.0.0-beta.2-request-schemas.json`.
 It contains only accepted-argument constraints for the 19 selected methods;
-return schemas and descriptive metadata are omitted. The raw capture is not in
+return schemas, defaults, and descriptive metadata are omitted. The raw capture is not in
 the repository. The bounded validator rejects unsupported schema assertions
 instead of silently ignoring them.
 
@@ -66,10 +66,11 @@ On a host running that exact build, this optional probe re-reads only
 python3 planning/verify_compatibility.py
 ```
 
-A build mismatch stops before querying method schemas. A pass establishes only
-that the selected request-schema metadata matches this fixture; it does not
-invoke those methods, prove TrueNAS will accept a write, or validate VM boot.
-Do not use the Beta fixture as evidence for another TrueNAS build.
+A build mismatch stops before querying method schemas. The operator reports this
+probe passed on the exact Beta.2 host, matching all 19 selected schemas. A pass
+establishes only that the selected request-schema metadata matches this fixture;
+it does not invoke those methods, prove TrueNAS will accept a write, or validate
+VM boot. Do not use the Beta fixture as evidence for another TrueNAS build.
 
 The examples are fictional. Copy and edit them locally rather than committing
 your host's inventory. The preview command reads only the files you explicitly

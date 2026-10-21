@@ -30,7 +30,7 @@
 ## Evidence gaps / blockers
 
 - The prior live-installer implementation and its local-only commits could not be recovered. The current remote offline planner is preserved and augmented with a read-only schema-capture helper and an unconnected, attributed safety core; none of this is a restoration of the missing installer.
-- An operator-provided read-only capture records `TrueNAS-26.0.0-BETA.2`; 19/19 selected method definitions were present in the capture. The committed fixture retains only accepted-request constraints. The compatibility probe has been tested offline against the capture, but has not been run against the live host; no middleware write acceptance or response-schema behavior has been tested.
+- An operator-provided read-only capture records `TrueNAS-26.0.0-BETA.2`; 19/19 selected method definitions were present in the capture. The committed fixture retains only accepted-request constraints. The operator reports that the read-only compatibility probe passed on that host build, comparing those 19 contracts via `system.version` and `core.get_methods` only. This does not establish middleware write acceptance or response-schema behavior.
 - No profile has been boot-tested in a disposable VM from this repository.
 - `.github/workflows/planner-tests.yml` tests the offline planner, schema-capture helper, and reusable-core mocks. The previously inspected credential lacked `workflow` scope; this change does not edit the workflow. Reauthorize the existing integration before any future workflow-file change if needed; do not create a replacement credential.
 
