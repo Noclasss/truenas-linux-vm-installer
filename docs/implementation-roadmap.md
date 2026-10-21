@@ -17,9 +17,9 @@
 | Offline planner | Config validation, optional caller-supplied inventory checks, interactive profile/resource prompts, JSON preview. | Does not query TrueNAS; inventory may be stale. |
 | Reusable safety core | Mock-tested bounded `midclt` wrapper, positional schema checks, private/atomic files, HTTPS downloads with size and SHA-256 checks. Read and write allowlists default to empty. | Not connected to an install flow. |
 | Ubuntu Server preparation | Pinned official Ubuntu 26.04 LTS amd64 cloud image has recorded exact-size/SHA-256 and QCOW2 inspection evidence. Offline helper now reuses the pinned verifier, validates source metadata with bounded `qemu-img`, creates/verifies a new raw output, and cleans its temporary file. Offline NoCloud seed helper built and inspected a local CIDATA ISO using a synthetic test key. | Helper tests are mocked; no TrueNAS import, zvol population, boot, or first-boot validation. |
-| Mock orchestration | Stateful fake rehearses dataset/zvol, stopped VM, device sequencing, manifest and read-back, using sanitized fixture constraints. Failure cases avoid retry and automatic cleanup. | Fake-only; no `midclt`, downloads, storage writes, or live resource creation. |
-| TrueNAS compatibility | Sanitized request and return schema constraints for 19 selected methods from `TrueNAS-26.0.0-BETA.2`; bounded fail-closed validator and optional read-only comparison probe. | Operator report covers the earlier request-only probe. The newer request-plus-return comparison still needs an operator run on that exact build. Schema matches do not prove write acceptance. |
-| CI | Hosted run [39601633509](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39601633509) passed all 110 unit tests, compilation, preview, and whitespace checks on code head `9d24c0b0176128e7160e55996a9d753b9d402ac7`. | A documentation-only follow-up does not change code coverage or establish live compatibility. |
+| Mock orchestration | Stateful fake rehearses dataset/zvol, stopped VM, device sequencing, manifest and read-back, using sanitized fixture constraints. It explicitly creates and records new parent datasets rather than using `create_ancestors`; ambiguous writes are not retried or cleaned up. | Fake-only; no `midclt`, downloads, storage writes, or live resource creation. |
+| TrueNAS compatibility | Sanitized request and return schema constraints for 19 selected methods from `TrueNAS-26.0.0-BETA.2`; bounded fail-closed validator and optional read-only comparison probe. Operator-provided report dated 2026-10-21 says all 19 request/return contracts matched, with only `system.version` and `core.get_methods` called and no writes. | Schema matches do not prove write acceptance, runtime resource behavior, or guest boot. |
+| CI | Hosted run [39601633509](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39601633509) passed 110 tests on earlier code head `9d24c0b0176128e7160e55996a9d753b9d402ac7`. The current unpushed follow-up passes all 112 local tests, compilation, preview/compatibility CLI smoke checks, and whitespace checks. | Hosted CI for the follow-up has not run yet; local success is not hosted or live evidence. |
 
 ## Next work, in order
 
@@ -29,15 +29,17 @@
 
 **Done when:** offline tests cover success, failed verification, unexpected source/output metadata, subprocess failure/timeout, existing output and cleanup; planner docs describe the helper and its limits.
 
-### 2. Close the read-only schema evidence gap
+### 2. Close the read-only schema evidence gap — complete for Beta.2
 
-If the exact Beta.2 host is still available, run `planning/verify_compatibility.py` there. Record the exact build, date, pass/fail, and that the calls were limited to `system.version` and `core.get_methods`. Do not copy a raw host capture or credentials into Git. If the host has moved to another build, capture and review a separate fixture for that build; never generalize the Beta.2 fixture.
+The operator-provided report `truenas-compatibility-20261021T133656Z.txt` records a passing comparison against `TrueNAS-26.0.0-BETA.2` for all 19 selected request/return contracts. The only middleware calls were `system.version` and `core.get_methods`; no write methods were called. Keep raw host captures outside Git. This result is specific to the exact build and does not prove write acceptance or runtime behavior.
 
-**Done when:** the request-and-return schema comparison has an attributable operator result, or the roadmap clearly records that the check remains unavailable.
+**Done when:** the exact-build comparison has an attributable operator result. Completed for Beta.2 on 2026-10-21; repeat with a separately reviewed fixture if TrueNAS changes build.
 
 ### 3. Review the install boundary before any live writer
 
 Keep `LIVE_PROFILE_ALLOWLIST` empty. Before implementing a real writer, review exact-build schemas for every method and request, define fresh preflight and duplicate/conflict checks, make each write's acknowledgement/read-back behavior explicit, and document interruption/reconciliation behavior. Any live path must default to stopped VMs and autostart disabled, never delete resources automatically, and operate only on installer-owned paths.
+
+**Audit result (2026-10-21):** the HAOS install flow is a monolithic, HAOS-specific script, so it was not copied wholesale. Its explicit parent-dataset creation pattern was adapted into the Linux fake: new parent datasets are recorded individually, existing shared parents are reused without claiming ownership, and ambiguous create responses require reconciliation without retry. This closes a mock-modeling gap only; it does not complete the live-writer review or authorize a live run.
 
 **Done when:** code review confirms explicit method/payload allowlists and tests cover ambiguous failures, partial completion, and safe reconciliation. This gate does not itself authorize a live run.
 

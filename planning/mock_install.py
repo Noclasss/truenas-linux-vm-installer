@@ -112,6 +112,12 @@ class MockMiddleware:
             name = spec["name"]
             if name in self.datasets:
                 raise MockInstallError("mock dataset already exists")
+            pool_name, _, _ = name.partition("/")
+            parent_name = name.rpartition("/")[0]
+            if spec.get("create_ancestors") is True:
+                raise MockInstallError("mock installer must create and manifest ancestors explicitly")
+            if parent_name != pool_name and parent_name not in self.datasets:
+                raise MockInstallError("mock dataset parent must be created explicitly first")
             dataset = {"id": name, **spec}
             self.datasets[name] = dataset
             return dict(dataset)
@@ -182,7 +188,9 @@ def _check_dataset_collisions(
             raise MockInstallError("an exact or ancestor/descendant dataset path conflicts with this VM")
 
 
-def _validate_request(request: MockInstallRequest, middleware: MockMiddleware) -> tuple[str, str, str]:
+def _validate_request(
+    request: MockInstallRequest, middleware: MockMiddleware
+) -> tuple[str, str, str, str]:
     if request.profile != PROFILE_ID or live_profile_enabled(request.profile):
         raise MockInstallError("only the disabled experimental Ubuntu Server profile is modeled")
     if not isinstance(request.vm_name, str) or not _MOCK_VM_NAME.fullmatch(request.vm_name):
@@ -196,7 +204,8 @@ def _validate_request(request: MockInstallRequest, middleware: MockMiddleware) -
     pool = middleware.pools[request.pool]
     if pool.get("healthy") is not True or type(pool.get("available_bytes")) is not int:
         raise MockInstallError("mock pool health or capacity is missing/invalid")
-    parent = f"{request.pool}/linux-vms/{request.vm_name}"
+    shared_parent = f"{request.pool}/linux-vms"
+    parent = f"{shared_parent}/{request.vm_name}"
     zvol = f"{parent}/disk0"
     _check_dataset_collisions(list(middleware.datasets.values()), request.pool, parent, zvol)
     if any(
@@ -217,7 +226,7 @@ def _validate_request(request: MockInstallRequest, middleware: MockMiddleware) -
     disk_bytes = request.disk_gib * 1024**3
     if pool["available_bytes"] < disk_bytes:
         raise MockInstallError("mock pool capacity is below the requested virtual-disk size")
-    return parent, zvol, f"/dev/zvol/{zvol}"
+    return shared_parent, parent, zvol, f"/dev/zvol/{zvol}"
 
 
 def _manifest_bytes(manifest: dict[str, Any]) -> str:
@@ -248,7 +257,7 @@ def run_mock_install(
     """
     if type(middleware) is not MockMiddleware:
         raise MockInstallError("mock-only backend required; no live middleware adapter is accepted")
-    parent, zvol, disk_path = _validate_request(request, middleware)
+    shared_parent, parent, zvol, disk_path = _validate_request(request, middleware)
     if confirmation != f"CREATE MOCK {request.vm_name}":
         raise MockInstallError("mock rehearsal requires exact per-VM confirmation")
     path = Path(manifest_path)
@@ -258,11 +267,17 @@ def run_mock_install(
         "profile": request.profile,
         "status": "preparing",
         "request": asdict(request),
-        "planned": {"parent_dataset": parent, "zvol": zvol, "vm_name": request.vm_name},
+        "planned": {
+            "shared_parent_dataset": shared_parent,
+            "parent_dataset": parent,
+            "zvol": zvol,
+            "vm_name": request.vm_name,
+        },
         "created": {"datasets": [], "vm": None, "devices": []},
         "notes": [
             "No TrueNAS API, download, image conversion, host storage, or VM start occurred.",
             "Mock identifier paths are synthetic and must never be used as live paths.",
+            "Dataset ancestors are created explicitly and recorded; create_ancestors is never used.",
         ],
     }
     try:
@@ -271,18 +286,25 @@ def run_mock_install(
         raise MockInstallError("could not exclusively create a private mock manifest") from exc
 
     try:
-        # Re-check the exact planned resource names in the stateful fake before writes.
-        _check_dataset_collisions(
-            middleware.call("pool.dataset.query", []), request.pool, parent, zvol
-        )
+        datasets_before = middleware.call("pool.dataset.query", [])
+        _check_dataset_collisions(datasets_before, request.pool, parent, zvol)
         if any(
             isinstance(vm.get("name"), str) and vm["name"].casefold() == request.vm_name.casefold()
             for vm in middleware.call("vm.query", [])
         ):
             raise MockInstallError("VM name appeared after mock preflight")
 
+        if not any(item.get("id") == shared_parent for item in datasets_before):
+            shared_parent_result = middleware.call(
+                "pool.dataset.create", [{"name": shared_parent, "type": "FILESYSTEM"}]
+            )
+            manifest["created"]["datasets"].append(
+                {"id": shared_parent_result["id"], "type": "FILESYSTEM"}
+            )
+            _persist(path, manifest)
+
         parent_result = middleware.call(
-            "pool.dataset.create", [{"name": parent, "type": "FILESYSTEM", "create_ancestors": True}]
+            "pool.dataset.create", [{"name": parent, "type": "FILESYSTEM"}]
         )
         manifest["created"]["datasets"].append({"id": parent_result["id"], "type": "FILESYSTEM"})
         _persist(path, manifest)
@@ -373,7 +395,8 @@ def run_mock_install(
                 raise MockInstallError("mock device read-back did not match the exact recorded attributes")
         dataset_by_id = {item.get("id"): item for item in datasets}
         if (
-            dataset_by_id.get(parent, {}).get("type") != "FILESYSTEM"
+            dataset_by_id.get(shared_parent, {}).get("type") != "FILESYSTEM"
+            or dataset_by_id.get(parent, {}).get("type") != "FILESYSTEM"
             or dataset_by_id.get(zvol, {}).get("type") != "VOLUME"
             or dataset_by_id.get(zvol, {}).get("volsize") != request.disk_gib * 1024**3
         ):
@@ -393,7 +416,7 @@ def run_mock_install(
         return MockRunResult(
             manifest_path=path,
             vm_id=vm_id,
-            dataset_ids=(parent, zvol),
+            dataset_ids=tuple(item["id"] for item in manifest["created"]["datasets"]),
             device_ids=tuple(sorted(actual_ids)),
             final_power_state="STOPPED",
             middleware_calls=tuple(method for method, _ in middleware.calls),

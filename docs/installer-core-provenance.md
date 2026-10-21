@@ -34,6 +34,25 @@ The source helpers were adapted and covered with synthetic/mocked tests; no
 TrueNAS calls, external artifact downloads, or VM writes were made while
 building or testing this port.
 
+## Orchestration audit outcome
+
+The HAOS installer is a monolithic, guest-specific flow rather than a reusable
+orchestration package. Its `install()` flow and static test suite were reviewed
+at the pinned source commit above. The flow's resource ownership, manifest, and
+failure-handling patterns are useful, but the image release/decompression,
+HAOS boot configuration, zvol naming, and resume assumptions are not safe to
+copy as a Linux implementation.
+
+One directly portable safety pattern is now applied in the Linux mock rehearsal:
+create the shared parent dataset explicitly if it is absent, then create the
+per-VM filesystem dataset and zvol as separate operations. Never ask middleware
+to create ancestors implicitly with `create_ancestors`; that could create
+resources the manifest does not record. The rehearsal records each successful
+creation separately, reuses an existing filesystem shared parent without
+claiming ownership, verifies all three dataset levels on read-back, and marks
+an ambiguous parent-create response for reconciliation without retrying. This
+remains an in-memory mock; it does not authorize or implement a live write path.
+
 ## Deliberately not ported
 
 - HAOS release selection/API endpoints, asset names, and Home Assistant version

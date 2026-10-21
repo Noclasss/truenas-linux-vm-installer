@@ -64,14 +64,30 @@ class MockInstallOrchestrationTests(unittest.TestCase):
         self.assertEqual(manifest["status"], "mock_verified_not_installed")
         self.assertEqual(manifest["created"]["vm"]["id"], result.vm_id)
         self.assertEqual(set(result.dataset_ids), {
+            "mock-pool/linux-vms",
             "mock-pool/linux-vms/MockUbuntu",
             "mock-pool/linux-vms/MockUbuntu/disk0",
         })
+        self.assertEqual(manifest["planned"]["shared_parent_dataset"], "mock-pool/linux-vms")
+        self.assertEqual(
+            {item["id"] for item in manifest["created"]["datasets"]},
+            set(result.dataset_ids),
+        )
         self.assertEqual(result.final_power_state, "STOPPED")
         self.assertEqual(result.device_ids, tuple(sorted(result.device_ids)))
         self.assertEqual(len(result.device_ids), 4)  # disk, CDROM, NIC, auto DISPLAY
         self.assertEqual(backend.writes.count("vm.create"), 1)
-        self.assertEqual(backend.writes.count("pool.dataset.create"), 2)
+        self.assertEqual(backend.writes.count("pool.dataset.create"), 3)
+        dataset_creates = [params[0] for method, params in backend.calls if method == "pool.dataset.create"]
+        self.assertEqual(
+            [item["name"] for item in dataset_creates],
+            [
+                "mock-pool/linux-vms",
+                "mock-pool/linux-vms/MockUbuntu",
+                "mock-pool/linux-vms/MockUbuntu/disk0",
+            ],
+        )
+        self.assertTrue(all("create_ancestors" not in item for item in dataset_creates))
         self.assertEqual(backend.writes.count("vm.device.create"), 3)
         vm_create = next(params[0] for method, params in backend.calls if method == "vm.create")
         self.assertIs(vm_create["autostart"], False)
@@ -93,6 +109,40 @@ class MockInstallOrchestrationTests(unittest.TestCase):
             method in {"pool.dataset.query", "vm.query", "vm.device.query", "pool.dataset.create", "vm.create", "vm.device.create"}
             for method in result.middleware_calls
         ))
+
+    def test_mock_backend_rejects_implicit_or_missing_dataset_ancestors(self):
+        cases = (
+            {
+                "name": "mock-pool/linux-vms/MockUbuntu",
+                "type": "FILESYSTEM",
+                "create_ancestors": True,
+            },
+            {"name": "mock-pool/linux-vms/MockUbuntu", "type": "FILESYSTEM"},
+        )
+        for payload in cases:
+            with self.subTest(payload=payload):
+                backend = make_backend()
+                with self.assertRaisesRegex(MockInstallError, "explicitly"):
+                    backend.call("pool.dataset.create", [payload])
+                self.assertEqual(backend.datasets, {})
+
+    def test_existing_shared_parent_is_reused_without_claiming_ownership(self):
+        backend = make_backend()
+        shared_parent = "mock-pool/linux-vms"
+        backend.datasets[shared_parent] = {"id": shared_parent, "type": "FILESYSTEM"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            result = run_mock_install(
+                request(), backend, manifest_path=path,
+                confirmation="CREATE MOCK MockUbuntu",
+            )
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertNotIn(shared_parent, {item["id"] for item in manifest["created"]["datasets"]})
+        self.assertNotIn(shared_parent, result.dataset_ids)
+        self.assertEqual(backend.writes.count("pool.dataset.create"), 2)
+        self.assertEqual(backend.datasets[shared_parent]["type"], "FILESYSTEM")
+        self.assertEqual(manifest["planned"]["shared_parent_dataset"], shared_parent)
 
     def test_confirmation_and_mock_backend_are_mandatory_before_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -178,6 +228,24 @@ class MockInstallOrchestrationTests(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), "keep")
             self.assertEqual(backend.writes, [])
 
+    def test_ambiguous_shared_parent_creation_is_not_retried(self):
+        backend = make_backend(fail_after_apply_method="pool.dataset.create")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            with self.assertRaisesRegex(MockInstallError, "lost response"):
+                run_mock_install(
+                    request(), backend, manifest_path=path,
+                    confirmation="CREATE MOCK MockUbuntu",
+                )
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+
+        shared_parent = "mock-pool/linux-vms"
+        self.assertEqual(manifest["status"], "reconcile_required")
+        self.assertEqual(backend.writes.count("pool.dataset.create"), 1)
+        self.assertEqual(set(backend.datasets), {shared_parent})
+        self.assertEqual(manifest["created"]["datasets"], [])
+        self.assertFalse(any(method.endswith(".delete") for method, _ in backend.calls))
+
     def test_ambiguous_write_is_not_retried_and_manifest_requires_reconciliation(self):
         backend = make_backend(fail_after_apply_method="vm.create")
         with tempfile.TemporaryDirectory() as directory:
@@ -216,10 +284,10 @@ class MockInstallOrchestrationTests(unittest.TestCase):
                                  confirmation="CREATE MOCK MockUbuntu")
             manifest = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["status"], "reconcile_required")
-        self.assertEqual(len(manifest["created"]["datasets"]), 2)
+        self.assertEqual(len(manifest["created"]["datasets"]), 3)
         self.assertEqual(backend.writes.count("vm.create"), 0)
         self.assertEqual(len(backend.vms), 0)
-        self.assertEqual(len(backend.datasets), 2)
+        self.assertEqual(len(backend.datasets), 3)
         self.assertFalse(any(method.endswith(".delete") for method, _ in backend.calls))
 
     def test_schema_mismatch_blocks_vm_write_after_manifesting_prior_resources(self):
@@ -233,7 +301,7 @@ class MockInstallOrchestrationTests(unittest.TestCase):
                                  confirmation="CREATE MOCK MockUbuntu")
             manifest = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["status"], "reconcile_required")
-        self.assertEqual(len(manifest["created"]["datasets"]), 2)
+        self.assertEqual(len(manifest["created"]["datasets"]), 3)
         self.assertEqual(backend.writes.count("vm.create"), 0)
         self.assertEqual(len(backend.vms), 0)
 
