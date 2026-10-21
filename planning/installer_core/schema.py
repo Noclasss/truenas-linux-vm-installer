@@ -14,6 +14,9 @@ class SchemaError(ValueError):
     """Payload or middleware schema does not match the supported contract."""
 
 
+MAX_SCHEMA_DEPTH = 64
+
+
 def _json_equal(left: Any, right: Any) -> bool:
     # In JSON, true is not the integer 1 even though Python considers them equal.
     if isinstance(left, bool) or isinstance(right, bool):
@@ -52,8 +55,10 @@ _SCHEMA_ANNOTATIONS = frozenset({
 })
 
 
-def normalize_schema_contract(schema: Any, path: str = "argument") -> dict[str, Any]:
+def normalize_schema_contract(schema: Any, path: str = "argument", _depth: int = 0) -> dict[str, Any]:
     """Return a constraint-only schema shape, rejecting unsupported keywords."""
+    if _depth > MAX_SCHEMA_DEPTH:
+        raise SchemaError(f"{path}: middleware schema exceeds the nesting limit")
     if not isinstance(schema, dict):
         raise SchemaError(f"{path}: middleware schema node is malformed")
     unsupported = sorted(set(schema) & UNSUPPORTED_SCHEMA_KEYWORDS)
@@ -70,14 +75,14 @@ def normalize_schema_contract(schema: Any, path: str = "argument") -> dict[str, 
             if not isinstance(value, dict):
                 raise SchemaError(f"{path}: middleware properties schema is malformed")
             normalized[keyword] = {
-                name: normalize_schema_contract(child, f"{path}.{keyword}.{name}")
+                name: normalize_schema_contract(child, f"{path}.{keyword}.{name}", _depth + 1)
                 for name, child in value.items()
             }
         elif keyword in {"items", "additionalItems", "additionalProperties"} and isinstance(value, dict):
-            normalized[keyword] = normalize_schema_contract(value, f"{path}.{keyword}")
+            normalized[keyword] = normalize_schema_contract(value, f"{path}.{keyword}", _depth + 1)
         elif keyword == "items" and isinstance(value, list):
             normalized[keyword] = [
-                normalize_schema_contract(child, f"{path}.{keyword}[{index}]")
+                normalize_schema_contract(child, f"{path}.{keyword}[{index}]", _depth + 1)
                 for index, child in enumerate(value)
             ]
         elif keyword == "additionalItems" and isinstance(value, list):
@@ -90,7 +95,7 @@ def normalize_schema_contract(schema: Any, path: str = "argument") -> dict[str, 
             if not isinstance(value, list) or not value:
                 raise SchemaError(f"{path}: middleware {keyword} definition is malformed")
             normalized[keyword] = [
-                normalize_schema_contract(child, f"{path}.{keyword}[{index}]")
+                normalize_schema_contract(child, f"{path}.{keyword}[{index}]", _depth + 1)
                 for index, child in enumerate(value)
             ]
         elif keyword == "required":
@@ -184,8 +189,17 @@ def normalize_method_contract(metadata: Any, method: str) -> dict[str, Any]:
     return normalized
 
 
-def schema_errors(value: Any, schema: Any, path: str = "argument", root: Any = None) -> list[str]:
+def schema_errors(
+    value: Any,
+    schema: Any,
+    path: str = "argument",
+    root: Any = None,
+    _depth: int = 0,
+    _ref_stack: tuple[str, ...] = (),
+) -> list[str]:
     """Return payload errors for the supported middleware-schema subset."""
+    if _depth > MAX_SCHEMA_DEPTH:
+        return [f"{path}: middleware schema exceeds the nesting limit"]
     if not isinstance(schema, dict):
         return [f"{path}: middleware schema node is malformed"]
     unsupported = sorted(set(schema) & UNSUPPORTED_SCHEMA_KEYWORDS)
@@ -196,11 +210,14 @@ def schema_errors(value: Any, schema: Any, path: str = "argument", root: Any = N
         return [f"{path}: unrecognized middleware schema keyword {unknown[0]!r}"]
     root = schema if root is None else root
     if "$ref" in schema:
+        reference = schema["$ref"]
+        if reference in _ref_stack:
+            return [f"{path}: circular middleware schema reference"]
         try:
-            target = _resolve_ref(schema["$ref"], root)
+            target = _resolve_ref(reference, root)
         except (KeyError, TypeError):
             return [f"{path}: unresolved middleware schema reference"]
-        reference_errors = schema_errors(value, target, path, root)
+        reference_errors = schema_errors(value, target, path, root, _depth + 1, _ref_stack + (reference,))
         if reference_errors:
             return reference_errors
     if "const" in schema and not _json_equal(value, schema["const"]):
@@ -214,17 +231,17 @@ def schema_errors(value: Any, schema: Any, path: str = "argument", root: Any = N
         if keyword in schema and (not isinstance(schema[keyword], list) or not schema[keyword]):
             return [f"{path}: middleware {keyword} definition is malformed"]
     if "oneOf" in schema:
-        matches = [variant for variant in schema["oneOf"] if not schema_errors(value, variant, path, root)]
+        matches = [variant for variant in schema["oneOf"] if not schema_errors(value, variant, path, root, _depth + 1, _ref_stack)]
         if len(matches) != 1:
             return [f"{path}: must match exactly one middleware variant; matched {len(matches)}"]
     if "anyOf" in schema and not any(
-        not schema_errors(value, variant, path, root) for variant in schema["anyOf"]
+        not schema_errors(value, variant, path, root, _depth + 1, _ref_stack) for variant in schema["anyOf"]
     ):
         return [f"{path}: does not match any middleware alternative"]
     if "allOf" in schema:
         composition_errors = []
         for variant in schema["allOf"]:
-            composition_errors.extend(schema_errors(value, variant, path, root))
+            composition_errors.extend(schema_errors(value, variant, path, root, _depth + 1, _ref_stack))
         if composition_errors:
             return composition_errors
 
@@ -258,10 +275,10 @@ def schema_errors(value: Any, schema: Any, path: str = "argument", root: Any = N
             errors.extend(f"{path}.{key}: field is not accepted" for key in sorted(extras))
         elif isinstance(additional, dict):
             for key in extras:
-                errors.extend(schema_errors(value[key], additional, f"{path}.{key}", root))
+                errors.extend(schema_errors(value[key], additional, f"{path}.{key}", root, _depth + 1, _ref_stack))
         for key, item in value.items():
             if key in properties:
-                errors.extend(schema_errors(item, properties[key], f"{path}.{key}", root))
+                errors.extend(schema_errors(item, properties[key], f"{path}.{key}", root, _depth + 1, _ref_stack))
     elif isinstance(value, list):
         if len(value) < schema.get("minItems", 0) or len(value) > schema.get("maxItems", math.inf):
             errors.append(f"{path}: array length is outside middleware bounds")
@@ -275,17 +292,17 @@ def schema_errors(value: Any, schema: Any, path: str = "argument", root: Any = N
             errors.append(f"{path}: array items are not accepted")
         elif isinstance(items, dict):
             for index, item in enumerate(value):
-                errors.extend(schema_errors(item, items, f"{path}[{index}]", root))
+                errors.extend(schema_errors(item, items, f"{path}[{index}]", root, _depth + 1, _ref_stack))
         elif isinstance(items, list):
             for index, item_schema in enumerate(items[:len(value)]):
-                errors.extend(schema_errors(value[index], item_schema, f"{path}[{index}]", root))
+                errors.extend(schema_errors(value[index], item_schema, f"{path}[{index}]", root, _depth + 1, _ref_stack))
             if len(value) > len(items):
                 additional = schema.get("additionalItems", True)
                 if additional is False:
                     errors.append(f"{path}: additional array items are not accepted")
                 elif isinstance(additional, dict):
                     for index in range(len(items), len(value)):
-                        errors.extend(schema_errors(value[index], additional, f"{path}[{index}]", root))
+                        errors.extend(schema_errors(value[index], additional, f"{path}[{index}]", root, _depth + 1, _ref_stack))
     elif isinstance(value, str):
         if len(value) < schema.get("minLength", 0) or len(value) > schema.get("maxLength", math.inf):
             errors.append(f"{path}: string length is outside middleware bounds")
@@ -350,11 +367,26 @@ def validate_method_request(methods: Any, method: str, params: Any) -> None:
 
 
 class SchemaCheckedClient:
-    """Wrap a middleware client so explicit write calls are schema-checked first."""
+    """Schema-check writes whose method names are explicitly allowlisted.
 
-    def __init__(self, client: Any, methods: dict[str, Any] | None = None):
+    Schema validation is not authorization. The default empty allowlist blocks
+    every write until the caller deliberately names permitted methods.
+    """
+
+    def __init__(
+        self,
+        client: Any,
+        methods: dict[str, Any] | None = None,
+        allowed_write_methods: set[str] | frozenset[str] = frozenset(),
+    ):
         self.client = client
         self.runtime_methods = methods
+        if not isinstance(allowed_write_methods, (set, frozenset)) or any(
+            not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.]*\Z", name)
+            for name in allowed_write_methods
+        ):
+            raise SchemaError("allowed write methods must be a set of valid middleware method names")
+        self.allowed_write_methods = frozenset(allowed_write_methods)
 
     def call_read(self, method: str, params: list[Any] | None = None) -> Any:
         payload = [] if params is None else params
@@ -363,6 +395,8 @@ class SchemaCheckedClient:
         return self.client.call(method, payload)
 
     def call_write(self, method: str, params: list[Any] | None = None) -> Any:
+        if not isinstance(method, str) or method not in self.allowed_write_methods:
+            raise SchemaError("middleware write method is not explicitly allowlisted")
         if self.runtime_methods is None:
             methods = self.client.call("core.get_methods", [])
             if not isinstance(methods, dict):

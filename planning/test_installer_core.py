@@ -108,6 +108,20 @@ class MiddlewareSchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(schema.SchemaError, "outside middleware bounds"):
             schema.validate_method_request(refs, "m", [3])
 
+    def test_schema_depth_and_recursive_references_fail_closed(self):
+        nested = {"type": "string"}
+        value = "x"
+        for _ in range(schema.MAX_SCHEMA_DEPTH + 2):
+            nested = {"type": "array", "items": nested}
+            value = [value]
+        with self.assertRaisesRegex(schema.SchemaError, "nesting limit"):
+            schema.normalize_schema_contract(nested)
+        self.assertTrue(any("nesting limit" in message for message in schema.schema_errors(value, nested)))
+
+        recursive = {"definitions": {"loop": {"$ref": "#/definitions/loop"}}}
+        errors = schema.schema_errors("x", {"$ref": "#/definitions/loop"}, root=recursive)
+        self.assertEqual(errors, ["argument: circular middleware schema reference"])
+
     def test_schema_validator_rejects_unsupported_assertions_even_in_optional_fields(self):
         self.assertEqual(
             schema.normalize_schema_contract({"type": "string", "title": "Name", "maxLength": 20}),
@@ -146,12 +160,21 @@ class MiddlewareSchemaTests(unittest.TestCase):
             "properties": {"name": {"type": "string", "_required_": True}}, "additionalProperties": False}]}}
         client = mock.Mock()
         client.call.side_effect = lambda method, params=None: methods if method == "core.get_methods" else {"id": 1}
-        checked = schema.SchemaCheckedClient(client)
+        checked = schema.SchemaCheckedClient(client, allowed_write_methods={"vm.create"})
         with self.assertRaises(schema.SchemaError):
             checked.call_write("vm.create", [{"name": "Linux", "bad": True}])
         self.assertEqual([call.args[0] for call in client.call.call_args_list], ["core.get_methods"])
         self.assertEqual(checked.call_write("vm.create", [{"name": "Linux"}]), {"id": 1})
         self.assertEqual([call.args[0] for call in client.call.call_args_list], ["core.get_methods", "vm.create"])
+
+    def test_checked_client_defaults_to_no_write_methods(self):
+        client = mock.Mock()
+        checked = schema.SchemaCheckedClient(client)
+        with self.assertRaisesRegex(schema.SchemaError, "not explicitly allowlisted"):
+            checked.call_write("vm.create", [{}])
+        with self.assertRaisesRegex(schema.SchemaError, "not explicitly allowlisted"):
+            checked.call_write(["pool.destroy"], [])
+        client.call.assert_not_called()
 
 
 class SafeFilesystemTests(unittest.TestCase):
