@@ -54,9 +54,12 @@ def ensure_private_cache_dir(cache_dir: Path) -> Path:
         raise ArtifactError(str(exc)) from exc
     except OSError as exc:
         raise ArtifactError("could not create a private artifact cache") from exc
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
-        raise ArtifactError("artifact cache must be a private directory owned by the current user")
-    os.chmod(cache_dir, 0o700)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+        raise ArtifactError("artifact cache must be a directory owned by the current user")
+    if stat.S_IMODE(info.st_mode) != 0o700:
+        raise ArtifactError(
+            "artifact cache must already have mode 0700; refusing to change existing directory permissions"
+        )
     return cache_dir
 
 
