@@ -16,18 +16,18 @@
 |---|---|---|
 | Offline planner | Config validation, optional caller-supplied inventory checks, interactive profile/resource prompts, JSON preview. | Does not query TrueNAS; inventory may be stale. |
 | Reusable safety core | Mock-tested bounded `midclt` wrapper, positional schema checks, private/atomic files, HTTPS downloads with size and SHA-256 checks. Read and write allowlists default to empty. | Not connected to an install flow. |
-| Ubuntu Server preparation | Pinned official Ubuntu 26.04 LTS amd64 cloud image passed exact-size/SHA-256 and QCOW2 checks. Offline NoCloud seed helper built and inspected a local CIDATA ISO using a synthetic test key. A scratch conversion to raw succeeded. | No packaged conversion helper, TrueNAS import, zvol population, boot, or first-boot validation. |
+| Ubuntu Server preparation | Pinned official Ubuntu 26.04 LTS amd64 cloud image has recorded exact-size/SHA-256 and QCOW2 inspection evidence. Offline helper now reuses the pinned verifier, validates source metadata with bounded `qemu-img`, creates/verifies a new raw output, and cleans its temporary file. Offline NoCloud seed helper built and inspected a local CIDATA ISO using a synthetic test key. | Helper tests are mocked; no TrueNAS import, zvol population, boot, or first-boot validation. |
 | Mock orchestration | Stateful fake rehearses dataset/zvol, stopped VM, device sequencing, manifest and read-back, using sanitized fixture constraints. Failure cases avoid retry and automatic cleanup. | Fake-only; no `midclt`, downloads, storage writes, or live resource creation. |
 | TrueNAS compatibility | Sanitized request and return schema constraints for 19 selected methods from `TrueNAS-26.0.0-BETA.2`; bounded fail-closed validator and optional read-only comparison probe. | Operator report covers the earlier request-only probe. The newer request-plus-return comparison still needs an operator run on that exact build. Schema matches do not prove write acceptance. |
 | CI | Hosted run [39598469135](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39598469135) passed all 104 unit tests, compilation, preview, and whitespace checks on code head `083f66793a047caed4158d9ff249c8f77dd527ca`. | A documentation-only follow-up does not change code coverage or establish live compatibility. |
 
 ## Next work, in order
 
-### 1. Implement offline image staging and conversion
+### 1. Offline image staging and conversion — implemented
 
-This is the next code task and can be completed without a TrueNAS host. Add a separately testable Ubuntu Server helper that stages the pinned cloud image in a private temporary directory, verifies exact size and SHA-256 before use, inspects QCOW2 metadata, and converts to a new raw image only when required. Use bounded subprocess calls without a shell, reject backing files or unexpected virtual sizes, refuse to overwrite outputs, and clean up only helper-owned temporary files. Add tests for corrupt input, command failure/timeout, unexpected metadata, and existing output. Do not add middleware calls or TrueNAS writes in this milestone.
+`planning/ubuntu_server.py` exposes `stage_ubuntu_server_raw_image(cache_dir, output_path)`. The helper explicitly downloads through the shared exact-size/SHA-256 verifier, inspects the source with bounded `qemu-img info`, rejects unexpected QCOW2 format, virtual size, backing file, or dirty flag, and converts to a raw image only after those checks. It validates converted format/virtual size, refuses pre-existing outputs (including races during publication), uses no shell, and removes its own temporary output on failure. It is local artifact preparation only: there is no TrueNAS import/zvol path, and mocked tests do not establish compatibility or guest boot. It requires `qemu-img`; it does not install tools. All profiles remain experimental.
 
-**Done when:** successful conversion and all failure paths are reproducible offline, and documentation describes the output location and verification performed.
+**Done when:** offline tests cover success, failed verification, unexpected source/output metadata, subprocess failure/timeout, existing output and cleanup; planner docs describe the helper and its limits.
 
 ### 2. Close the read-only schema evidence gap
 

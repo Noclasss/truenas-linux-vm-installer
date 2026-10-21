@@ -22,7 +22,9 @@ from planning.ubuntu_server import (
     build_meta_data,
     build_seed_iso,
     download_ubuntu_server_image,
+    stage_ubuntu_server_raw_image,
 )
+from planning.installer_core.artifacts import ArtifactError
 
 
 def dummy_public_key(key_type="ssh-ed25519"):
@@ -234,6 +236,127 @@ class UbuntuServerProfileTests(unittest.TestCase):
             self.assertNotIn("not installed", str(error.exception))
             self.assertFalse(output.exists())
             self.assertEqual(list(Path(directory).iterdir()), [])
+    def test_offline_raw_staging_success_and_exact_commands(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "verified.qcow2"
+            source.write_bytes(b"verified")
+            output = root / "disk.raw"
+            calls = []
+            runner_kwargs = []
+            def runner(args, **kwargs):
+                calls.append(args)
+                runner_kwargs.append(kwargs)
+                if args[1] == "convert":
+                    Path(args[-1]).write_bytes(b"raw-data")
+                    data = {"format": "raw", "virtual-size": 3_758_096_384}
+                elif "-f" in args and args[args.index("-f") + 1] == "raw":
+                    data = {"format": "raw", "virtual-size": 3_758_096_384}
+                else:
+                    data = {"format": "qcow2", "virtual-size": 3_758_096_384, "dirty-flag": False}
+                return subprocess.CompletedProcess(args, 0, stdout=json.dumps(data))
+            with patch("planning.ubuntu_server.download_ubuntu_server_image", return_value=source) as download:
+                result = stage_ubuntu_server_raw_image(root / "cache", output, runner=runner)
+            download.assert_called_once_with(root / "cache")
+            self.assertEqual(result, output)
+            self.assertEqual(output.read_bytes(), b"raw-data")
+            self.assertEqual(len(calls), 3)
+            self.assertTrue(all(isinstance(call, list) for call in calls))
+            self.assertEqual(calls[1][1:4], ["convert", "-n", "-f"])
+            self.assertTrue(all(kwargs["check"] and kwargs["capture_output"] for kwargs in runner_kwargs))
+            self.assertTrue(all(kwargs["timeout"] == 300 for kwargs in runner_kwargs))
+            self.assertTrue(all("shell" not in call for call in calls))
+            self.assertTrue(all(not list(root.glob(".ubuntu-raw-*.tmp")) for _ in [0]))
+
+    def test_raw_staging_rejects_corrupt_or_mismatched_download(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch(
+                "planning.ubuntu_server.download_and_verify",
+                side_effect=ArtifactError("downloaded artifact size or digest mismatch"),
+            ) as verifier:
+                with self.assertRaises(ArtifactError):
+                    download_ubuntu_server_image(root / "cache")
+            verifier.assert_called_once_with(
+                url=ARTIFACT_URL,
+                sha256=ARTIFACT_SHA256,
+                cache_dir=root / "cache",
+                max_bytes=ARTIFACT_MAX_BYTES,
+                expected_size=ARTIFACT_SIZE_BYTES,
+            )
+            source = root / "verified-qcow2"
+            source.write_bytes(b"verified")
+            runner = Mock(return_value=subprocess.CompletedProcess(
+                [], 0, stdout=json.dumps({"format": "vmdk", "virtual-size": 3_758_096_384})
+            ))
+            with patch("planning.ubuntu_server.download_ubuntu_server_image", return_value=source):
+                with self.assertRaises(ArtifactError):
+                    stage_ubuntu_server_raw_image(root / "cache", root / "out.raw", runner=runner)
+            runner.assert_called_once()
+
+    def test_raw_staging_rejects_unexpected_source_and_output_metadata(self):
+        cases = [
+            {"format": "raw", "virtual-size": 3_758_096_384},
+            {"format": "qcow2", "virtual-size": 99, "backing-filename": "parent.qcow2"},
+            {"format": "qcow2", "virtual-size": 3_758_096_384, "dirty-flag": True},
+        ]
+        for metadata in cases:
+            with self.subTest(metadata=metadata), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "source"
+                source.write_bytes(b"verified")
+                runner = Mock(return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(metadata)))
+                with patch("planning.ubuntu_server.download_ubuntu_server_image", return_value=source):
+                    with self.assertRaises(ArtifactError):
+                        stage_ubuntu_server_raw_image(root / "cache", root / "out.raw", runner=runner)
+                self.assertEqual(runner.call_count, 1)
+                self.assertEqual(list(root.glob(".ubuntu-raw-*.tmp")), [])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.write_bytes(b"verified")
+            def bad_raw_info(args, **kwargs):
+                if args[1] == "convert":
+                    Path(args[-1]).write_bytes(b"raw")
+                    result = {"format": "raw", "virtual-size": 10}
+                elif "-f" in args:
+                    result = {"format": "raw", "virtual-size": 10}
+                else:
+                    result = {"format": "qcow2", "virtual-size": 3_758_096_384, "dirty-flag": False}
+                return subprocess.CompletedProcess(args, 0, stdout=json.dumps(result))
+            with patch("planning.ubuntu_server.download_ubuntu_server_image", return_value=source):
+                with self.assertRaises(ArtifactError):
+                    stage_ubuntu_server_raw_image(root / "cache", root / "out.raw", runner=bad_raw_info)
+            self.assertFalse((root / "out.raw").exists())
+            self.assertEqual(list(root.glob(".ubuntu-raw-*.tmp")), [])
+
+    def test_raw_staging_refuses_existing_output_before_download(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "out.raw"
+            output.write_bytes(b"keep")
+            with patch("planning.ubuntu_server.download_ubuntu_server_image") as download:
+                with self.assertRaises(ArtifactError):
+                    stage_ubuntu_server_raw_image(root / "cache", output)
+                download.assert_not_called()
+            self.assertEqual(output.read_bytes(), b"keep")
+
+    def test_raw_staging_cleans_up_after_subprocess_failure_and_timeout(self):
+        for failure in (subprocess.CalledProcessError(1, ["qemu-img"]), subprocess.TimeoutExpired(["qemu-img"], 1)):
+            with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "source"
+                source.write_bytes(b"verified")
+                def runner(args, **kwargs):
+                    if args[1] == "info":
+                        return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"format":"qcow2", "virtual-size":3_758_096_384}))
+                    raise failure
+                with patch("planning.ubuntu_server.download_ubuntu_server_image", return_value=source):
+                    with self.assertRaises(ArtifactError):
+                        stage_ubuntu_server_raw_image(root / "cache", root / "out.raw", runner=runner)
+                self.assertFalse((root / "out.raw").exists())
+                self.assertEqual(list(root.glob(".ubuntu-raw-*.tmp")), [])
 
 
 if __name__ == "__main__":

@@ -98,6 +98,86 @@ def download_ubuntu_server_image(cache_dir: Path) -> Path:
     )
 
 
+def stage_ubuntu_server_raw_image(
+    cache_dir: Path,
+    output_path: Path,
+    *,
+    qemu_img: str = "qemu-img",
+    timeout: int = 300,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> Path:
+    """Verify the pinned cloud image, inspect it, and safely create a raw copy.
+
+    The source is obtained only through the existing digest-keyed downloader.
+    qemu-img is invoked without a shell and with bounded timeouts. The raw
+    output is created exclusively; pre-existing destinations are never changed.
+    This is local artifact preparation only, not TrueNAS/zvol import validation.
+    """
+    if type(timeout) is not int or not 1 <= timeout <= 1800:
+        raise ProfileValidationError("image conversion timeout must be from 1 to 1800 seconds")
+    if not isinstance(qemu_img, str) or not qemu_img or any(c in qemu_img for c in "\x00\n\r"):
+        raise ProfileValidationError("qemu-img executable must be a non-empty command path")
+    raw_output = Path(output_path).expanduser()
+    if ".." in raw_output.parts or not _SAFE_OUTPUT_NAME.fullmatch(raw_output.name):
+        raise ProfileValidationError("raw image output must have a safe filename and no parent traversal")
+    try:
+        cache = ensure_private_cache_dir(Path(cache_dir))
+        output_dir = ensure_private_cache_dir(raw_output.parent)
+    except (ArtifactError, FilesystemSafetyError, OSError) as exc:
+        raise ArtifactError("image staging directory is not a trusted private directory") from exc
+    target = output_dir / raw_output.name
+    try:
+        target.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ArtifactError("could not inspect raw image output") from exc
+    else:
+        raise ArtifactError("refusing to overwrite an existing raw image")
+
+    source = download_ubuntu_server_image(cache)
+    temporary: Path | None = None
+    try:
+        info_result = runner(
+            [qemu_img, "info", "--output=json", os.fspath(source)],
+            check=True, capture_output=True, text=True, timeout=timeout,
+        )
+        info = json.loads(info_result.stdout)
+        if (not isinstance(info, dict)
+                or info.get("format") != IMAGE_FORMAT
+                or info.get("virtual-size") != IMAGE_VIRTUAL_SIZE_BYTES
+                or info.get("backing-filename") not in (None, "")
+                or info.get("dirty-flag") is not False):
+            raise ArtifactError("pinned image has unexpected QCOW2 metadata")
+        fd, temp_name = tempfile.mkstemp(prefix=".ubuntu-raw-", suffix=".tmp", dir=output_dir)
+        os.close(fd)
+        temporary = Path(temp_name)
+        os.chmod(temporary, 0o600)
+        runner(
+            [qemu_img, "convert", "-n", "-f", IMAGE_FORMAT, "-O", "raw", os.fspath(source), os.fspath(temporary)],
+            check=True, capture_output=True, text=True, timeout=timeout,
+        )
+        converted = runner(
+            [qemu_img, "info", "--output=json", "-f", "raw", os.fspath(temporary)],
+            check=True, capture_output=True, text=True, timeout=timeout,
+        )
+        raw_info = json.loads(converted.stdout)
+        if (not isinstance(raw_info, dict) or raw_info.get("format") != "raw"
+                or raw_info.get("virtual-size") != IMAGE_VIRTUAL_SIZE_BYTES):
+            raise ArtifactError("converted raw image has unexpected format or virtual size")
+        # Hard-link publication is exclusive and cannot replace a racing destination.
+        os.link(temporary, target, follow_symlinks=False)
+        return target
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError, OSError, TypeError) as exc:
+        raise ArtifactError("qemu-img inspection or conversion failed") from exc
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def _validate_vm_name(vm_name: str) -> str:
     if not isinstance(vm_name, str) or not _VM_NAME.fullmatch(vm_name):
         raise ProfileValidationError(
