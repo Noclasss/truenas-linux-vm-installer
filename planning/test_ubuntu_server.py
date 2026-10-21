@@ -268,6 +268,34 @@ class UbuntuServerProfileTests(unittest.TestCase):
             self.assertTrue(all("shell" not in call for call in calls))
             self.assertTrue(all(not list(root.glob(".ubuntu-raw-*.tmp")) for _ in [0]))
 
+    def test_raw_staging_preserves_existing_output_directory_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output_dir = root / "published"
+            output_dir.mkdir(mode=0o755)
+            output_dir.chmod(0o755)
+            source = root / "source"
+            source.write_bytes(b"verified")
+
+            def runner(args, **kwargs):
+                if args[1] == "convert":
+                    Path(args[-1]).write_bytes(b"raw-data")
+                    data = {"format": "raw", "virtual-size": 3_758_096_384}
+                elif "-f" in args and args[args.index("-f") + 1] == "raw":
+                    data = {"format": "raw", "virtual-size": 3_758_096_384}
+                else:
+                    data = {"format": "qcow2", "virtual-size": 3_758_096_384, "dirty-flag": False}
+                return subprocess.CompletedProcess(args, 0, stdout=json.dumps(data))
+
+            original_mode = stat.S_IMODE(output_dir.stat().st_mode)
+            with patch("planning.ubuntu_server.download_ubuntu_server_image", return_value=source):
+                result = stage_ubuntu_server_raw_image(
+                    root / "cache", output_dir / "disk.raw", runner=runner
+                )
+            self.assertTrue(result.is_file())
+            self.assertEqual(stat.S_IMODE(output_dir.stat().st_mode), original_mode)
+            self.assertEqual(original_mode, 0o755)
+
     def test_raw_staging_rejects_corrupt_or_mismatched_download(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
