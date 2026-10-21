@@ -41,6 +41,7 @@ METHODS_TO_CAPTURE = (
     "vm.status",
     "vm.device.query",
     "vm.device.create",
+    "vm.device.convert",
     "vm.device.delete",
     "vm.device.nic_attach_choices",
     "vm.supports_virtualization",

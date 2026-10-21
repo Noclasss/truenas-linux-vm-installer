@@ -1,6 +1,23 @@
 {
   "format": "truenas-method-contract-fixture-v1",
   "method_count": 19,
+  "method_semantics": {
+    "pool.query.free": {
+      "truenas_version": "TrueNAS-26.0.0-BETA.2",
+      "unit": "bytes",
+      "evidence": "core.get_methods return description captured 2026-10-21T07:28:31Z"
+    },
+    "vm.create.memory": {
+      "truenas_version": "TrueNAS-26.0.0-BETA.2",
+      "unit": "MiB",
+      "evidence": "core.get_methods argument description captured 2026-10-21T07:28:31Z"
+    },
+    "vm.get_available_memory.result": {
+      "truenas_version": "TrueNAS-26.0.0-BETA.2",
+      "unit": "bytes",
+      "evidence": "core.get_methods return description captured 2026-10-21T07:28:31Z"
+    }
+  },
   "methods": {
     "core.get_methods": {
       "accepts": [

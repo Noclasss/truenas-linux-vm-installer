@@ -12,6 +12,8 @@ The following is the complete candidate write set for a future Ubuntu Server cre
 - `vm.create`
 - `vm.device.create`
 
+**Potential image-to-zvol method (not in the mock/live write set):** the TrueNAS 26.0 API reference describes `vm.device.convert` as a job for converting between disk images and ZFS volumes, with source/destination paths and the `VM_DEVICE_WRITE` role. This 26.0 reference is not an exact `TrueNAS-26.0.0-BETA.2` contract. The current 19-method Beta.2 fixture does not include it; its absence from that selected fixture is not proof the method is unavailable. `planning/capture_schema.py` now requests its metadata in the next read-only `core.get_methods` capture, but never invokes the conversion method. Do not add it to a writer or mock as accepted until the exact target capture and path/permission behavior are reviewed. [TrueNAS `vm.device.convert` API reference](https://api.truenas.com/v26.0/api_methods_vm.device.convert.html)
+
 Explicitly outside this boundary: `vm.start`, `vm.stop`, `vm.device.delete`, dataset/VM deletion, host networking changes, and automatic rollback. A VM remains stopped and `autostart` remains false. Do not add a method to a live allowlist without a separately reviewed exact-build contract and authorization.
 
 A future live adapter must revalidate the selected caller-supplied pool and bridge with read-only methods (`pool.query`, `interface.query` and/or `vm.device.nic_attach_choices`) without choosing a substitute. Before creation, it must read `pool.dataset.query` and `vm.query`; after creation, it must read back exact dataset, VM, and device targets using `pool.dataset.query`, `vm.query`, and `vm.device.query`. These are design candidates from the Beta.2 fixture, not calls made by the mock's inventory checks. Re-query exact collision targets immediately before their writes; a stale inventory is not sufficient.
@@ -38,9 +40,24 @@ The fake models the middleware-created DISPLAY device requested by `ensure_displ
 
 ## Preflight and conflicts
 
-Before any write, a future live implementation must fail closed unless all of these hold:
+### Read-only preflight prototype
 
-- The user explicitly selected the experimental Ubuntu Server profile, valid VM name, pool, bridge, CPU/RAM/disk settings, and verified seed artifact. No automatic pool/bridge selection or host discovery.
+`planning/check_readonly_preflight.py` runs only when an operator explicitly invokes it with caller-selected values. Example shape (the placeholders must be replaced with deliberate choices):
+
+```sh
+python3 planning/check_readonly_preflight.py \
+  --profile ubuntu-server --vm-name <vm-name> --pool <pool-name> --bridge <bridge-name> \
+  --vcpus <count> --memory-mib <mib> --disk-gib <gib> \
+  --host-reserve-mib <mib> --pool-reserve-mib <mib>
+```
+
+It first checks the exact TrueNAS build and reviewed contracts, then makes only these read-only calls: `pool.query`, `pool.dataset.query`, `vm.query`, `vm.device.query`, `vm.device.nic_attach_choices`, `vm.supports_virtualization`, `vm.maximum_supported_vcpus`, and `vm.get_available_memory` (in addition to `system.version` and `core.get_methods`). Pool and bridge inputs are mandatory; query results only verify them and never choose substitutes. The preflight rejects boot pools, unhealthy or non-ONLINE pools, insufficient full-disk-plus-operator-reserve capacity, ineligible bridges, name/path collisions, unsupported virtualization, excessive vCPUs, and inadequate reported memory. It requires explicit positive host-memory and pool-space reserves rather than guessing defaults. It creates no files or resources and prints no full host inventory.
+
+The operator-provided `core.get_methods` capture for `TrueNAS-26.0.0-BETA.2`, captured at `2026-10-21T07:28:31Z`, describes available VM memory and pool free space in bytes, and `vm.create.memory` in MiB. The sanitized fixture records these units and exact build separately from the JSON schema; the preflight fails closed if any unit metadata is missing, disagrees, or belongs to another build. Available memory remains a volatile snapshot. A passing report is only read-only evidence—not authorization to create or start a VM. This command was exercised against fake middleware only; it has not been run against TrueNAS.
+
+Before any write, a future live implementation must also meet all of these requirements:
+
+- The user explicitly selected the experimental Ubuntu Server profile, valid VM name, pool, bridge, CPU/RAM/disk settings, and verified seed artifact. No automatic pool/bridge selection; read-only queries may validate only those explicit choices.
 - A fresh read confirms the selected pool is healthy and has sufficient capacity for the chosen policy, and the selected bridge is still an eligible VM attachment target.
 - No VM with the requested name exists (case-insensitive comparison), and no exact, ancestor, descendant, or wrong-type dataset collision exists at the intended paths.
 - The private operation manifest is exclusively created before the first write. It records the entire plan and ownership intent; an existing manifest is never overwritten.

@@ -86,7 +86,10 @@ all 19 selected request and return schema contracts on the exact Beta.2 build.
 It called only `system.version` and `core.get_methods`; no write methods were
 called. A pass establishes only schema metadata compatibility; it does not prove
 TrueNAS accepts a write, validate runtime response data, or validate VM boot.
-Do not use this Beta fixture as evidence for another TrueNAS build.
+Do not use this Beta fixture as evidence for another TrueNAS build. The next
+read-only capture request also includes `vm.device.convert` metadata so its
+availability and schema can be reviewed; capture still calls only
+`system.version` and `core.get_methods` and never invokes conversion.
 
 The examples are fictional. Copy and edit them locally rather than committing
 your host's inventory. The preview command reads only the files you explicitly
@@ -100,6 +103,21 @@ Run `python3 planning/preview.py --interactive` to collect choices without touch
 The prompts collect a VM name, storage pool, existing network bridge, total vCPUs, RAM MiB, and virtual-disk size GiB. With `--inventory`, pools and bridges are shown as numbered choices from that supplied snapshot; the inventory can be stale. Without it, the pool and bridge are typed manually and the preview marks them unchecked.
 
 Storage selection is by **ZFS pool**, not an individual physical drive: the proposed path is `<pool>/linux-vms/<name>/disk0`. The future installer must create a per-VM dataset/zvol only after a fresh live preflight confirms the selected pool is healthy, writable, and has sufficient capacity. Network selection is an **existing bridge**; this planner will not create or alter bridges, VLANs, routes, or host networking. It does not set a guest IP or validate guest networking. The plan keeps the VM stopped and autostart disabled. CPU, RAM, and disk bounds are planner input limits, not host-capacity or guest-support guarantees; this remains a JSON preview, not an installer.
+
+## Read-only live preflight prototype
+
+`planning/check_readonly_preflight.py` is a separate, explicitly invoked read-only command for the experimental Ubuntu Server profile. It requires caller-selected values—including positive host-memory and pool-space reserves—and checks the exact-build fixture, selected pool health/capacity, selected bridge eligibility, VM/device/dataset path conflicts, virtualization support, CPU limit, and reported available memory. It cannot create a VM, dataset, device, or manifest and cannot start a VM. It prints only the selected identifiers and pass/fail checks, not the full queried inventory.
+
+Example invocation shape (use only deliberate caller-selected values):
+
+```sh
+python3 planning/check_readonly_preflight.py \
+  --profile ubuntu-server --vm-name <vm-name> --pool <pool-name> --bridge <bridge-name> \
+  --vcpus <count> --memory-mib <mib> --disk-gib <gib> \
+  --host-reserve-mib <mib> --pool-reserve-mib <mib>
+```
+
+It has been exercised only with fake middleware tests, not against TrueNAS. The operator-provided `TrueNAS-26.0.0-BETA.2` `core.get_methods` capture from `2026-10-21T07:28:31Z` describes available VM memory and pool free space in bytes, and `vm.create.memory` in MiB. The sanitized fixture records these build-specific units, and the preflight fails closed if any are missing or do not match the fixture build. Available memory is still a volatile snapshot. A pass is not authorization to create or start a VM; all profiles remain experimental.
 
 ## Mock-only orchestration rehearsal
 
@@ -116,7 +134,7 @@ versions or guest provisioning support implied.
 
 Names, pools and bridges use a conservative subset: 1–63 ASCII characters,
 starting with a letter, followed by letters, digits, underscores or hyphens.
-Some valid TrueNAS identifiers may therefore be rejected. CPU, RAM and disk
+Some valid TrueNAS identifiers may therefore be rejected. The offline preview allows underscores/hyphens for VM-name planning, but the TrueNAS VM API preflight and mock contract restrict live-target VM names to ASCII letters and digits. CPU, RAM and disk
 bounds are planner policy, not validated guest requirements or host capacity.
 CPU count means total virtual CPUs, modeled as one socket with that many cores
 and one thread per core. It is not yet a TrueNAS API payload.
