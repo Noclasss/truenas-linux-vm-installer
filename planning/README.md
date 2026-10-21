@@ -42,7 +42,7 @@ The first profile is pinned to Canonical's latest dated Ubuntu 26.04 LTS release
 - SHA-256 from the official signed `SHA256SUMS`: `5645d0318ad21f643ebb1ac4567514620e9893380b07b0201fda163baa5b7eb5`
 - Expected size: `859090944` bytes
 - The detached signature was checked against Ubuntu's documented cloud-image signing key fingerprint `D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81`. The verifier used for this check did not assess revocation or self-signature status; do not describe it as a complete GnuPG keyring audit. Runtime downloads use the fixed URL, digest, and exact-size check; the raw checksum/signature files are not included.
-- The exact downloaded artifact passed the existing pinned size/SHA-256 verifier. On that file, `qemu-img info --output=json` reported `format: qcow2`, `virtual-size: 3758096384`, no backing file, and `dirty-flag: false`; `qemu-img check -f qcow2` reported no errors. A scratch-only `qemu-img convert` to raw also completed with the same virtual size (819,237,376 bytes actual allocation). This supports a future QCOW2-to-raw workflow, but no conversion helper or TrueNAS import path is implemented; it does not validate TrueNAS behavior or guest boot.
+- The exact downloaded artifact passed the existing pinned size/SHA-256 verifier. On that file, `qemu-img info --output=json` reported `format: qcow2`, `virtual-size: 3758096384`, no backing file, and `dirty-flag: false`; `qemu-img check -f qcow2` reported no errors. A scratch-only `qemu-img convert` to raw completed with the same virtual size (819,237,376 bytes actual allocation). The offline `stage_ubuntu_server_raw_image(cache_dir, output_path)` helper now implements this QCOW2-to-raw workflow with pinned download verification, bounded metadata checks, output verification, refusal to overwrite, and temporary-file cleanup. It does not implement a TrueNAS import path or validate TrueNAS behavior or guest boot.
 
 Provisioning uses cloud-init's NoCloud datasource: `user-data` plus `meta-data` on CIDATA-labeled ISO media created with `cloud-localds`; the seed metadata sets `dsmode: local` so the datasource does not depend on guest networking. The seed helper accepts validated OpenSSH public keys only, locks the created account's password, disables SSH password authentication and root login, and never accepts private keys or passwords. It invokes `cloud-localds` without a shell, stages seed files in a mode-0700 directory, uses mode-0600 files, bounds execution time, and refuses output overwrite. A real local seed build succeeded using Debian tools extracted only into private scratch (no system packages installed); `isoinfo` reported volume ID `cidata` and both NoCloud files. The key used was a synthetic, nonfunctional test value, not a login credential. No TrueNAS device was created and no guest consumed the ISO. Future host preflight must verify required utilities are present; it must not install packages automatically.
 
@@ -81,13 +81,12 @@ python3 planning/verify_compatibility.py
 ```
 
 A build mismatch stops before querying method schemas.
-A prior operator report said the request-only probe passed on the exact Beta.2
-host; that report does not cover the return-schema comparison added here. The
-current checker compares both request and return schema metadata using only
-`system.version` and `core.get_methods`. A pass establishes only schema metadata
-compatibility; it does not invoke those methods, prove TrueNAS accepts a write,
-validate runtime response data, or validate VM boot. Do not use this Beta fixture
-as evidence for another TrueNAS build.
+An operator-provided report dated 2026-10-21 records that the probe matched
+all 19 selected request and return schema contracts on the exact Beta.2 build.
+It called only `system.version` and `core.get_methods`; no write methods were
+called. A pass establishes only schema metadata compatibility; it does not prove
+TrueNAS accepts a write, validate runtime response data, or validate VM boot.
+Do not use this Beta fixture as evidence for another TrueNAS build.
 
 The examples are fictional. Copy and edit them locally rather than committing
 your host's inventory. The preview command reads only the files you explicitly
@@ -146,7 +145,7 @@ plan, but a future installer must verify its suitability before creating childre
 ## Remaining installation gates
 
 1. Implement and review a real installer adapter only after the mock sequence and target-version contracts are complete; the live profile allowlist must remain empty until then.
-2. Run a read-only build/schema compatibility probe on the intended host; any build without a reviewed fixture remains unchecked.
+2. Before any future live validation, confirm the target host still runs a build with a reviewed fixture and repeat the read-only build/schema probe if its exact build has changed; other builds remain unchecked.
 3. Implement actual image staging/import and populate a new zvol; the current mock does none of these operations.
 4. Add fresh live preflight for duplicate names, pool health/capacity, host RAM/CPU headroom, and existing bridge choices.
 5. Validate each profile's boot and first boot in a disposable VM with separate authorization.
