@@ -64,6 +64,16 @@ class MockInstallOrchestrationTests(unittest.TestCase):
 
         self.assertEqual(manifest["mode"], "offline-mock-only")
         self.assertEqual(manifest["status"], "mock_verified_not_installed")
+        self.assertEqual(manifest["image_import"]["status"], "acknowledged")
+        self.assertEqual(manifest["image_import"]["source"], "mock://artifact/ubuntu-server.qcow2")
+        self.assertEqual(
+            manifest["image_import"]["destination"],
+            "/dev/zvol/mock-pool/linux-vms/MockUbuntu/disk0",
+        )
+        self.assertEqual(
+            backend.converted_zvols,
+            {"mock-pool/linux-vms/MockUbuntu/disk0": "mock://artifact/ubuntu-server.qcow2"},
+        )
         self.assertEqual(manifest["created"]["vm"]["id"], result.vm_id)
         self.assertEqual(set(result.dataset_ids), {
             "mock-pool/linux-vms",
@@ -105,7 +115,7 @@ class MockInstallOrchestrationTests(unittest.TestCase):
             [method for method, _ in write_calls],
             [
                 "pool.dataset.create", "pool.dataset.create", "pool.dataset.create",
-                "vm.create", "vm.device.create", "vm.device.create", "vm.device.create",
+                "vm.device.convert", "vm.create", "vm.device.create", "vm.device.create", "vm.device.create",
             ],
         )
         self.assertEqual(set(backend.writes), MOCK_WRITE_METHODS)
@@ -120,6 +130,13 @@ class MockInstallOrchestrationTests(unittest.TestCase):
         )
         self.assertEqual(
             write_calls[3][1],
+            {
+                "source": "mock://artifact/ubuntu-server.qcow2",
+                "destination": "/dev/zvol/mock-pool/linux-vms/MockUbuntu/disk0",
+            },
+        )
+        self.assertEqual(
+            write_calls[4][1],
             {
                 "name": "MockUbuntu",
                 "memory": 4096,
@@ -166,13 +183,92 @@ class MockInstallOrchestrationTests(unittest.TestCase):
             for device in manifest["created"]["devices"]
         ))
         self.assertTrue(all(
-            method in {"pool.dataset.query", "vm.query", "vm.device.query", "pool.dataset.create", "vm.create", "vm.device.create"}
+            method in {"pool.dataset.query", "vm.query", "vm.device.query", "pool.dataset.create", "vm.device.convert", "vm.create", "vm.device.create"}
             for method in result.middleware_calls
         ))
 
-    def test_conversion_contract_is_not_enabled_for_mock_or_live_writes(self):
-        self.assertNotIn("vm.device.convert", MOCK_WRITE_METHODS)
+    def test_conversion_is_mocked_only_and_profiles_remain_live_disabled(self):
+        self.assertIn("vm.device.convert", MOCK_WRITE_METHODS)
         self.assertEqual(LIVE_PROFILE_ALLOWLIST, frozenset())
+
+    def test_conversion_rejects_a_non_run_owned_target(self):
+        backend = make_backend()
+        backend.datasets["mock-pool/linux-vms/OldVm/disk0"] = {
+            "id": "mock-pool/linux-vms/OldVm/disk0",
+            "type": "VOLUME",
+        }
+        with self.assertRaisesRegex(MockInstallError, "fresh zvol created by this run"):
+            backend.call(
+                "vm.device.convert",
+                [{
+                    "source": "mock://artifact/ubuntu-server.qcow2",
+                    "destination": "/dev/zvol/mock-pool/linux-vms/OldVm/disk0",
+                }],
+            )
+        self.assertEqual(backend.converted_zvols, {})
+
+    def test_conversion_rejects_zvol_smaller_than_the_synthetic_source(self):
+        backend = make_backend(
+            datasets={
+                "mock-pool/linux-vms": {"id": "mock-pool/linux-vms", "type": "FILESYSTEM"},
+                "mock-pool/linux-vms/MockUbuntu": {
+                    "id": "mock-pool/linux-vms/MockUbuntu", "type": "FILESYSTEM",
+                },
+            },
+        )
+        zvol = "mock-pool/linux-vms/MockUbuntu/disk0"
+        backend.call(
+            "pool.dataset.create",
+            [{"name": zvol, "type": "VOLUME", "volsize": 1, "sparse": True}],
+        )
+        with self.assertRaisesRegex(MockInstallError, "smaller than the synthetic source image"):
+            backend.call(
+                "vm.device.convert",
+                [{
+                    "source": "mock://artifact/ubuntu-server.qcow2",
+                    "destination": f"/dev/zvol/{zvol}",
+                }],
+            )
+        self.assertEqual(backend.converted_zvols, {})
+
+    def test_existing_target_zvol_is_refused_before_conversion(self):
+        backend = make_backend(
+            datasets={
+                "mock-pool/linux-vms": {"id": "mock-pool/linux-vms", "type": "FILESYSTEM"},
+                "mock-pool/linux-vms/MockUbuntu/disk0": {
+                    "id": "mock-pool/linux-vms/MockUbuntu/disk0", "type": "VOLUME",
+                },
+            },
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(MockInstallError, "conflicts"):
+                run_mock_install(
+                    request(), backend, manifest_path=Path(directory) / "manifest.json",
+                    confirmation="CREATE MOCK MockUbuntu",
+                )
+        self.assertNotIn("vm.device.convert", backend.writes)
+        self.assertEqual(backend.converted_zvols, {})
+
+    def test_ambiguous_conversion_is_reconciled_without_retry(self):
+        backend = make_backend(fail_after_apply_method="vm.device.convert")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            with self.assertRaisesRegex(MockInstallError, "lost response"):
+                run_mock_install(
+                    request(), backend, manifest_path=path,
+                    confirmation="CREATE MOCK MockUbuntu",
+                )
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["image_import"]["status"], "pending")
+            conversion_calls_before = backend.writes.count("vm.device.convert")
+            assessment = inspect_mock_reconciliation(manifest, backend)
+        self.assertEqual(conversion_calls_before, 1)
+        self.assertIn(
+            "image_import_applied_without_acknowledgement:mock-pool/linux-vms/MockUbuntu/disk0",
+            assessment.discrepancies,
+        )
+        self.assertEqual(backend.writes.count("vm.device.convert"), 1)
+        self.assertEqual(assessment.disposition, "manual_review_required")
 
     def test_mock_backend_rejects_implicit_or_missing_dataset_ancestors(self):
         cases = (

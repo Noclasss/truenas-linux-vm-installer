@@ -22,10 +22,13 @@ Replace the path and commit placeholder with the actual reviewed checkout and co
 The following is the complete candidate write set for a future Ubuntu Server create-only flow. It is exercised only by `MockMiddleware`; none of these methods is enabled for a live profile:
 
 - `pool.dataset.create`
+- `vm.device.convert` (in-memory simulation only)
 - `vm.create`
 - `vm.device.create`
 
-**Captured but not enabled method:** an operator-provided `core.get_methods` capture for exact build `TrueNAS-26.0.0-BETA.2` includes `vm.device.convert`. It is a job requiring `VM_DEVICE_WRITE`; its single required argument object has non-empty string `source` and `destination` fields, and its result is boolean. The operator's read-only probe matched its contract as part of the 20-method fixture; no conversion call was made. Offline inspection of the official middleware source at tag `TS-26.0.0-BETA.2`, commit `69e77a6f2e089d392db6e4a3df146bcbe8fba98e`, found that image-to-zvol expects an existing image file under `/mnt`, an existing ZFS volume/device node, and sufficient zvol size; it runs `qemu-img convert` to raw and refuses a zvol attached to a running VM. Zvol-to-image expects a non-existing output file under `/mnt` and an existing parent directory. This source review clarifies direction and path validation but does not establish runtime path visibility/permissions, write acceptance, successful zvol population, or failure recovery. Keep the method outside both mock and live write sets until an offline mock flow and its safety tests are reviewed. [TrueNAS `vm.device.convert` API reference](https://api.truenas.com/v26.0/api_methods_vm.device.convert.html)
+**Contract and boundary:** an operator-provided `core.get_methods` capture for exact build `TrueNAS-26.0.0-BETA.2` includes `vm.device.convert`; it is a job requiring `VM_DEVICE_WRITE`, accepts a required object with non-empty string `source` and `destination`, and returns a boolean. The operator's read-only probe matched the contract as part of the 20-method fixture; TrueNAS was not asked to perform a conversion. Offline inspection of the official middleware source at tag `TS-26.0.0-BETA.2`, commit `69e77a6f2e089d392db6e4a3df146bcbe8fba98e`, found that image-to-zvol expects an existing image file under `/mnt`, an existing ZFS volume/device node, and sufficient zvol size; it runs `qemu-img convert` to raw and refuses a zvol attached to a running VM. Source review does not prove runtime path visibility, permissions, write acceptance, successful population, or failure recovery.
+
+The mock includes `vm.device.convert` only as an in-memory state transition. It accepts a fixed synthetic source identifier and only the fresh, sufficiently sized zvol created by that mock run; the destination is a synthetic path. It does not invoke `qemu-img`, open a path, or alter storage. The method remains outside all live write allowlists. [TrueNAS `vm.device.convert` API reference](https://api.truenas.com/v26.0/api_methods_vm.device.convert.html)
 
 Explicitly outside this boundary: `vm.start`, `vm.stop`, `vm.device.delete`, dataset/VM deletion, host networking changes, and automatic rollback. A VM remains stopped and `autostart` remains false. Do not add a method to a live allowlist without a separately reviewed exact-build contract and authorization.
 
@@ -42,9 +45,12 @@ A future live adapter must revalidate the selected caller-supplied pool and brid
 3. Create the VM disk zvol:
    `pool.dataset.create([{"name": "<pool>/linux-vms/<vm>/disk0", "type": "VOLUME", "volsize": <disk_gib> * 1024**3, "sparse": true}])`
    Ancestors are explicit; never request `create_ancestors`.
-4. Create the VM:
+4. Model image import into the fresh zvol:
+   `vm.device.convert([{ "source": "mock://artifact/ubuntu-server.qcow2", "destination": "/dev/zvol/mock-pool/linux-vms/<vm>/disk0" }])`
+   The synthetic call is not an actual conversion. The mock rejects targets that are pre-existing or smaller than the pinned source's virtual size. `sparse: true` above is only the current mock payload; live sparse-zvol policy remains unresolved.
+5. Create the VM:
    `vm.create([{ "name": <vm>, "memory": <memory_mib>, "vcpus": <vcpus>, "bootloader": "UEFI", "enable_secure_boot": false, "autostart": false, "ensure_display_device": true, "description": "EXPERIMENTAL MOCK ONLY - not a live installer VM" }])`
-5. Attach devices, one request at a time with a manifest update after each acknowledged response:
+6. Attach devices, one request at a time with a manifest update after each acknowledged response:
    - Disk: `vm.device.create([{ "vm": <vm_id>, "attributes": {"dtype": "DISK", "path": "/dev/zvol/<pool>/linux-vms/<vm>/disk0", "type": "VIRTIO"} }])`
    - NoCloud seed: `vm.device.create([{ "vm": <vm_id>, "attributes": {"dtype": "CDROM", "path": "mock://seed/cidata.iso"} }])`
    - Network: `vm.device.create([{ "vm": <vm_id>, "attributes": {"dtype": "NIC", "nic_attach": <caller-selected bridge>, "type": "VIRTIO"} }])`
@@ -90,7 +96,7 @@ The current mock tests cover supplied inventory, pool health/capacity, duplicate
 
 ## Evidence and remaining gates
 
-- Offline tests assert the full mock write method sequence, exact request payloads, schema validation, acknowledged read-back, no `vm.start`/delete, and reconciliation of lost dataset, VM, and device responses.
+- Offline tests assert the full mock write method sequence, exact request payloads, schema validation, fresh-zvol conversion gating, acknowledged read-back, no `vm.start`/delete, and manual-review reconciliation of ambiguous conversion/dataset/VM/device responses.
 - Reconciliation tests verify that it makes only `pool.dataset.query`, `vm.query`, and `vm.device.query` calls and does not add writes; they cover both a newly created shared parent and a pre-existing shared parent that must not be claimed.
 - `LIVE_PROFILE_ALLOWLIST` remains empty. All four distro profiles remain experimental.
 - Before any live writer: separately review a current exact-build capture, replace mock-only paths/values with verified live artifact paths, review fresh query semantics and capacity policy, test the real read-only adapter, obtain explicit authorization, and validate only in an isolated disposable environment. No live write was part of this review.
