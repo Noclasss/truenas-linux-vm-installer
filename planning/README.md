@@ -99,6 +99,12 @@ The prompts collect a VM name, storage pool, existing network bridge, total vCPU
 
 Storage selection is by **ZFS pool**, not an individual physical drive: the proposed path is `<pool>/linux-vms/<name>/disk0`. The future installer must create a per-VM dataset/zvol only after a fresh live preflight confirms the selected pool is healthy, writable, and has sufficient capacity. Network selection is an **existing bridge**; this planner will not create or alter bridges, VLANs, routes, or host networking. It does not set a guest IP or validate guest networking. The plan keeps the VM stopped and autostart disabled. CPU, RAM, and disk bounds are planner input limits, not host-capacity or guest-support guarantees; this remains a JSON preview, not an installer.
 
+## Mock-only orchestration rehearsal
+
+`planning/mock_install.py` is a developer test harness, not an install command. Its `run_mock_install` accepts only the module's exact in-memory `MockMiddleware` type, validates the simulated dataset/VM/device request payloads against the sanitized TrueNAS 26.0.0-BETA.2 fixture, writes a caller-selected *local* test manifest exclusively, and verifies the resulting fake state. Its paths and seed URI are synthetic. It never invokes `midclt`, downloads or converts an image, opens host storage, or starts a VM. The `LIVE_PROFILE_ALLOWLIST` is empty; the harness cannot enable a production profile.
+
+The rehearsal models parent-dataset and zvol creation, a stopped/autostart-disabled VM, disk/NoCloud-CDROM/NIC devices, and the fake middleware-created DISPLAY device. It records each acknowledged resource in a mode-0600 manifest. Simulated failures retain the manifest, mark the run for reconciliation when writes may have occurred, and do not retry or automatically delete anything. Run its tests with `python3 -m unittest planning.test_mock_install`; these verify orchestration logic only. They do **not** establish that TrueNAS accepts a write, that image data reaches a zvol, or that a guest boots or completes provisioning.
+
 ## Config format
 
 All seven fields in `examples/vm.json` are required; unknown fields are rejected.
@@ -136,11 +142,10 @@ plan, but a future installer must verify its suitability before creating childre
 
 ## Remaining installation gates
 
-1. Integrate and review the unpublished installer source.
-2. Run the read-only build/schema compatibility probe on the intended host; any build without a reviewed fixture remains unchecked.
-3. Select official images with trusted integrity metadata and distro-specific provisioning.
-4. Revalidate live names, storage, networking and host capacity immediately before creation.
-5. Implement explicit confirmation, durable ownership manifests and conservative recovery.
-6. Validate each profile's boot and first boot in a disposable VM with separate authorization.
+1. Implement and review a real installer adapter only after the mock sequence and target-version contracts are complete; the live profile allowlist must remain empty until then.
+2. Run a read-only build/schema compatibility probe on the intended host; any build without a reviewed fixture remains unchecked.
+3. Implement actual image staging/import and populate a new zvol; the current mock does none of these operations.
+4. Add fresh live preflight for duplicate names, pool health/capacity, host RAM/CPU headroom, and existing bridge choices.
+5. Validate each profile's boot and first boot in a disposable VM with separate authorization.
 
 Mocked/offline tests do not establish live TrueNAS compatibility.
