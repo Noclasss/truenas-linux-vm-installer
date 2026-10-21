@@ -1,7 +1,8 @@
 """Mock-only Ubuntu Server install orchestration rehearsal.
 
 This module is an in-memory test harness, not an installer. It cannot connect
-through midclt, download/convert an image, write host storage, or start a VM.
+through midclt, download or actually convert an image, write host storage, or
+start a VM.
 The distinct MockMiddleware type is required so a production adapter cannot be
 passed accidentally. Live profile support remains empty.
 """
@@ -32,11 +33,13 @@ else:
 
 LIVE_PROFILE_ALLOWLIST: frozenset[str] = frozenset()
 MOCK_WRITE_METHODS: frozenset[str] = frozenset(
-    {"pool.dataset.create", "vm.create", "vm.device.create"}
+    {"pool.dataset.create", "vm.device.convert", "vm.create", "vm.device.create"}
 )
 _MOCK_VM_NAME = re.compile(r"[A-Za-z][A-Za-z0-9]{0,62}\Z")
 _MOCK_POOL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _MOCK_SEED_IDENTIFIER = "mock://seed/cidata.iso"
+_MOCK_SOURCE_IMAGE = "mock://artifact/ubuntu-server.qcow2"
+_MOCK_SOURCE_IMAGE_VIRTUAL_SIZE_BYTES = 3_758_096_384
 
 
 class MockInstallError(RuntimeError):
@@ -73,6 +76,8 @@ class MockMiddleware:
     datasets: dict[str, dict[str, Any]] = field(default_factory=dict)
     vms: dict[int, dict[str, Any]] = field(default_factory=dict)
     devices: dict[int, dict[str, Any]] = field(default_factory=dict)
+    converted_zvols: dict[str, str] = field(default_factory=dict)
+    _fresh_run_zvols: set[str] = field(default_factory=set)
     calls: list[tuple[str, list[Any]]] = field(default_factory=list)
     writes: list[str] = field(default_factory=list)
     _next_id: int = 1
@@ -109,7 +114,7 @@ class MockMiddleware:
             return [dict(value) for _, value in sorted(self.devices.items())]
         raise MockInstallError(f"method is not implemented by the in-memory mock: {method}")
 
-    def _apply_write(self, method: str, params: list[Any]) -> dict[str, Any]:
+    def _apply_write(self, method: str, params: list[Any]) -> dict[str, Any] | bool:
         if method == "pool.dataset.create":
             spec = params[0]
             name = spec["name"]
@@ -123,7 +128,37 @@ class MockMiddleware:
                 raise MockInstallError("mock dataset parent must be created explicitly first")
             dataset = {"id": name, **spec}
             self.datasets[name] = dataset
+            if spec.get("type") == "VOLUME":
+                self._fresh_run_zvols.add(name)
             return dict(dataset)
+        if method == "vm.device.convert":
+            spec = params[0]
+            source = spec.get("source")
+            destination = spec.get("destination")
+            prefix = "/dev/zvol/"
+            zvol = (
+                destination[len(prefix):]
+                if isinstance(destination, str) and destination.startswith(prefix)
+                else None
+            )
+            if source != _MOCK_SOURCE_IMAGE:
+                raise MockInstallError("mock conversion accepts only its fixed synthetic image identifier")
+            if not isinstance(zvol, str) or zvol not in self._fresh_run_zvols:
+                raise MockInstallError("mock conversion target must be a fresh zvol created by this run")
+            volume = self.datasets.get(zvol, {})
+            if volume.get("type") != "VOLUME":
+                raise MockInstallError("mock conversion target is not a zvol")
+            volsize = volume.get("volsize")
+            if type(volsize) is not int or volsize < _MOCK_SOURCE_IMAGE_VIRTUAL_SIZE_BYTES:
+                raise MockInstallError("mock conversion target is smaller than the synthetic source image")
+            if any(
+                device.get("attributes", {}).get("path") == destination
+                for device in self.devices.values()
+            ):
+                raise MockInstallError("mock conversion target is already attached to a device")
+            self.converted_zvols[zvol] = source
+            self._fresh_run_zvols.remove(zvol)
+            return True
         if method == "vm.create":
             spec = params[0]
             if any(vm["name"] == spec["name"] for vm in self.vms.values()):
@@ -263,16 +298,17 @@ def run_mock_install(
 ) -> MockRunResult:
     """Rehearse orchestration against the in-memory fake only.
 
-    No download, conversion, TrueNAS transport, host path, or VM start exists in
-    this function. Writes affect only ``MockMiddleware`` and a caller-selected
-    local test manifest. A failed or ambiguous run is recorded and never retried
-    or automatically cleaned up.
+    No download, real conversion, TrueNAS transport, host path, or VM start exists
+    in this function. The conversion call is simulated in memory. Writes affect
+    only ``MockMiddleware`` and a caller-selected local test manifest. A failed
+    or ambiguous run is recorded and never retried or automatically cleaned up.
     """
     if type(middleware) is not MockMiddleware:
         raise MockInstallError("mock-only backend required; no live middleware adapter is accepted")
     shared_parent, parent, zvol, disk_path = _validate_request(request, middleware)
     if confirmation != f"CREATE MOCK {request.vm_name}":
         raise MockInstallError("mock rehearsal requires exact per-VM confirmation")
+    middleware._fresh_run_zvols.clear()
     path = Path(manifest_path)
     manifest = {
         "format": "truenas-linux-mock-manifest-v1",
@@ -286,10 +322,15 @@ def run_mock_install(
             "zvol": zvol,
             "vm_name": request.vm_name,
         },
+        "image_import": {
+            "status": "not_started",
+            "source": _MOCK_SOURCE_IMAGE,
+            "destination": disk_path,
+        },
         "preflight": {"shared_parent_state": "not_checked"},
         "created": {"datasets": [], "vm": None, "devices": []},
         "notes": [
-            "No TrueNAS API, download, image conversion, host storage, or VM start occurred.",
+            "No TrueNAS API, download, real image conversion, host storage, or VM start occurred.",
             "Mock identifier paths are synthetic and must never be used as live paths.",
             "Dataset ancestors are created explicitly and recorded; create_ancestors is never used.",
         ],
@@ -335,6 +376,17 @@ def run_mock_install(
             [{"name": zvol, "type": "VOLUME", "volsize": request.disk_gib * 1024**3, "sparse": True}],
         )
         manifest["created"]["datasets"].append({"id": zvol_result["id"], "type": "VOLUME"})
+        _persist(path, manifest)
+
+        manifest["image_import"]["status"] = "pending"
+        _persist(path, manifest)
+        converted = middleware.call(
+            "vm.device.convert",
+            [{"source": _MOCK_SOURCE_IMAGE, "destination": disk_path}],
+        )
+        if converted is not True:
+            raise MockInstallError("mock image conversion did not return the expected success value")
+        manifest["image_import"]["status"] = "acknowledged"
         _persist(path, manifest)
 
         # A mock URI makes it impossible to accidentally pass a real local image path.
@@ -503,6 +555,32 @@ def inspect_mock_reconciliation(
 
     discrepancies: set[str] = set()
     untracked: set[str] = set()
+
+    image_import = manifest.get("image_import")
+    if not isinstance(image_import, dict):
+        discrepancies.add("invalid_manifest_image_import")
+    else:
+        import_status = image_import.get("status")
+        import_source = image_import.get("source")
+        import_destination = image_import.get("destination")
+        expected_destination = f"/dev/zvol/{zvol}"
+        actual_source = middleware.converted_zvols.get(zvol)
+        if import_source != _MOCK_SOURCE_IMAGE or import_destination != expected_destination:
+            discrepancies.add("invalid_manifest_image_import_plan")
+        elif import_status == "acknowledged":
+            if actual_source != import_source:
+                discrepancies.add(f"acknowledged_image_import_missing:{zvol}")
+        elif import_status == "pending":
+            discrepancies.add(
+                f"image_import_applied_without_acknowledgement:{zvol}"
+                if actual_source == import_source
+                else f"image_import_acknowledgement_missing:{zvol}"
+            )
+        elif import_status == "not_started":
+            if actual_source is not None:
+                discrepancies.add(f"unrecorded_image_import:{zvol}")
+        else:
+            discrepancies.add("invalid_manifest_image_import_status")
 
     dataset_rows = middleware.call("pool.dataset.query", [])
     vm_rows = middleware.call("vm.query", [])
