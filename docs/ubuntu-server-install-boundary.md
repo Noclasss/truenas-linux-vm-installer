@@ -19,13 +19,16 @@ Replace the path and commit placeholder with the actual reviewed checkout and co
 
 ## Proposed method boundary
 
-The following is the complete candidate write set for a future Ubuntu Server create-only flow. It is exercised only by `MockMiddleware`; none of these methods is enabled for a live profile:
+The following is the candidate write set for a future Ubuntu Server create-only flow. It is exercised only by `MockMiddleware`; none of these methods is enabled for a live profile:
 
 - `pool.dataset.create`
+- `vm.device.convert` (mocked import into the fresh zvol created by this run)
 - `vm.create`
 - `vm.device.create`
 
-**Captured but not enabled method:** an operator-provided `core.get_methods` capture for exact build `TrueNAS-26.0.0-BETA.2` includes `vm.device.convert`. It is a job requiring `VM_DEVICE_WRITE`; its single required argument object has non-empty string `source` and `destination` fields, and its result is boolean. The operator's read-only probe matched its contract as part of the 20-method fixture; no conversion call was made. Offline inspection of the official middleware source at tag `TS-26.0.0-BETA.2`, commit `69e77a6f2e089d392db6e4a3df146bcbe8fba98e`, found that image-to-zvol expects an existing image file under `/mnt`, an existing ZFS volume/device node, and sufficient zvol size; it runs `qemu-img convert` to raw and refuses a zvol attached to a running VM. Zvol-to-image expects a non-existing output file under `/mnt` and an existing parent directory. This source review clarifies direction and path validation but does not establish runtime path visibility/permissions, write acceptance, successful zvol population, or failure recovery. Keep the method outside both mock and live write sets until an offline mock flow and its safety tests are reviewed. [TrueNAS `vm.device.convert` API reference](https://api.truenas.com/v26.0/api_methods_vm.device.convert.html)
+**Contract and evidence:** an operator-provided `core.get_methods` capture for exact build `TrueNAS-26.0.0-BETA.2` includes `vm.device.convert`. It is a job requiring `VM_DEVICE_WRITE`; its single required argument object has non-empty string `source` and `destination` fields, and its result is boolean. The operator's read-only probe matched its contract as part of the 20-method fixture; no conversion call was made. Offline inspection of the official middleware source at tag `TS-26.0.0-BETA.2`, commit `69e77a6f2e089d392db6e4a3df146bcbe8fba98e`, found that image-to-zvol expects an existing image file under `/mnt`, an existing ZFS volume/device node, and sufficient zvol size; it runs `qemu-img convert` to raw and refuses a zvol attached to a running VM. Zvol-to-image expects a non-existing output file under `/mnt` and an existing parent directory. This source review clarifies direction and path validation but does not establish runtime path visibility/permissions, write acceptance, successful zvol population, or failure recovery.
+
+The offline fake now models an import only from its fixed `mock://artifact/ubuntu-server.qcow2` identifier to the fresh zvol created by the same mock run. It records pending/acknowledged state and exercises an applied-but-unacknowledged conversion as manual-review-only; it does not invoke `qemu-img`, open a path, or alter storage. The fake's `/dev/zvol/mock-pool/...` destination is synthetic and not a usable host path. This is orchestration coverage, not conversion evidence. [TrueNAS `vm.device.convert` API reference](https://api.truenas.com/v26.0/api_methods_vm.device.convert.html)
 
 Explicitly outside this boundary: `vm.start`, `vm.stop`, `vm.device.delete`, dataset/VM deletion, host networking changes, and automatic rollback. A VM remains stopped and `autostart` remains false. Do not add a method to a live allowlist without a separately reviewed exact-build contract and authorization.
 
@@ -42,14 +45,17 @@ A future live adapter must revalidate the selected caller-supplied pool and brid
 3. Create the VM disk zvol:
    `pool.dataset.create([{"name": "<pool>/linux-vms/<vm>/disk0", "type": "VOLUME", "volsize": <disk_gib> * 1024**3, "sparse": true}])`
    Ancestors are explicit; never request `create_ancestors`.
-4. Create the VM:
+4. Model image import into that just-created zvol:
+   `vm.device.convert([{ "source": "mock://artifact/ubuntu-server.qcow2", "destination": "/dev/zvol/mock-pool/linux-vms/<vm>/disk0" }])`
+   This fixed synthetic call is accepted only for the zvol created in the current mock run and only if its virtual size meets the synthetic source's recorded size. No conversion occurs. The `sparse: true` setting is only part of the current mock request; sparse-zvol policy remains unresolved for a live flow.
+5. Create the VM:
    `vm.create([{ "name": <vm>, "memory": <memory_mib>, "vcpus": <vcpus>, "bootloader": "UEFI", "enable_secure_boot": false, "autostart": false, "ensure_display_device": true, "description": "EXPERIMENTAL MOCK ONLY - not a live installer VM" }])`
-5. Attach devices, one request at a time with a manifest update after each acknowledged response:
+6. Attach devices, one request at a time with a manifest update after each acknowledged response:
    - Disk: `vm.device.create([{ "vm": <vm_id>, "attributes": {"dtype": "DISK", "path": "/dev/zvol/<pool>/linux-vms/<vm>/disk0", "type": "VIRTIO"} }])`
    - NoCloud seed: `vm.device.create([{ "vm": <vm_id>, "attributes": {"dtype": "CDROM", "path": "mock://seed/cidata.iso"} }])`
    - Network: `vm.device.create([{ "vm": <vm_id>, "attributes": {"dtype": "NIC", "nic_attach": <caller-selected bridge>, "type": "VIRTIO"} }])`
 
-The fake models the middleware-created DISPLAY device requested by `ensure_display_device`; it is recorded and included in read-back. Whether the selected TrueNAS build creates and reports that device exactly this way is unverified. The mock CDROM URI is deliberately nonfunctional and must never be used live. A real seed path, storage visibility, sparse-zvol policy, and all write acceptance remain unresolved.
+The fake models the middleware-created DISPLAY device requested by `ensure_display_device`; it is recorded and included in read-back. Whether the selected TrueNAS build creates and reports that device exactly this way is unverified. The mock CDROM URI is deliberately nonfunctional and must never be used live. A real seed path, conversion source accessibility, storage visibility, sparse-zvol policy, and all write acceptance remain unresolved.
 
 ## Preflight and conflicts
 

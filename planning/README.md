@@ -84,9 +84,11 @@ The exact-build probe output for commit `1b10b439f9bf2d10ff1afa0da228b30416043bc
 
 ## Repository review status (2026-10-21)
 
-- PR #2 is the open, draft, unmerged `feat/multi-distro-installer` branch to `main`; current head `62d786c939b97fb3b425a662632ce29e422604ce`. Its latest hosted Actions runs (PR run `39648144793`, push run `39648137214`) succeeded. The latest code-bearing run `39622916219` reported 116 passing tests; the current branch head has the same Git tree as the tested code commit.
-- PR #3 is the separate stacked, open, draft, unmerged `fix/readonly-preflight-memory-units` branch to `feat/multi-distro-installer`; its last verified published head before this status update was `76289eb3f5d6829127cb7e793b312c9b20a298ce`. The latest verified hosted Actions run `39644757734` succeeded. The local suite passed 138 tests, along with compilation and CLI help checks; the hosted log did not provide a test count in the evidence available for this status update.
-- `main` remains at `88ef8195da992904dc24f7cfe49a717502b3e95f`. The branch heads and CI results do not establish a live preflight, write acceptance, VM creation, or boot validation.
+- PR #3 (`fix/readonly-preflight-memory-units` → `feat/multi-distro-installer`) was squash-merged as `4ddf0b79a9c62658fc6aeabe88b1adafe860d004`; PR #2 (`feat/multi-distro-installer` → `main`) was then squash-merged as `f40ca4c8cd520a6cbae0d9732cb43e9d59a16dc4`.
+- Documentation PR #5 was squash-merged as `5393a2fea8d32fe896bfcc54163183fd4834c074`, the verified current `main` head. Its post-merge push run [39656161788](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39656161788) succeeded; the hosted test count was not independently retrieved. PR #4 remains open and is marked superseded.
+- The current local `fix/readonly-preflight-memory-units` worktree passes 142 offline tests after adding an in-memory conversion model. These local changes are not published and have no hosted checks yet.
+
+These commits and checks do not establish a live preflight, write acceptance, VM creation, or boot validation. All four profiles remain experimental.
 
 The examples are fictional. Copy and edit them locally rather than committing
 your host's inventory. The preview command reads only the files you explicitly
@@ -118,9 +120,9 @@ It has been exercised only with fake middleware tests, not against TrueNAS. The 
 
 ## Mock-only orchestration rehearsal
 
-`planning/mock_install.py` is a developer test harness, not an install command. Its `run_mock_install` accepts only the module's exact in-memory `MockMiddleware` type, validates the simulated dataset/VM/device request payloads against the sanitized TrueNAS 26.0.0-BETA.2 fixture, writes a caller-selected *local* test manifest exclusively, and verifies the resulting fake state. Its paths and seed URI are synthetic. It never invokes `midclt`, downloads or converts an image, opens host storage, or starts a VM. The `LIVE_PROFILE_ALLOWLIST` is empty; the harness cannot enable a production profile.
+`planning/mock_install.py` is a developer test harness, not an install command. Its `run_mock_install` accepts only the module's exact in-memory `MockMiddleware` type, validates the simulated dataset/VM/device/conversion request payloads against the sanitized TrueNAS 26.0.0-BETA.2 fixture, writes a caller-selected *local* test manifest exclusively, and verifies the resulting fake state. Its paths and seed URI are synthetic. It never invokes `midclt`, downloads or actually converts an image, opens host storage, or starts a VM. The `LIVE_PROFILE_ALLOWLIST` is empty; the harness cannot enable a production profile.
 
-The rehearsal models parent-dataset and zvol creation, a stopped/autostart-disabled VM, disk/NoCloud-CDROM/NIC devices, and the fake middleware-created DISPLAY device. It records each acknowledged resource in a mode-0600 manifest. Simulated failures retain the manifest, mark the run for reconciliation when writes may have occurred, and do not retry or automatically delete anything. Run its tests with `python3 -m unittest planning.test_mock_install`; these verify orchestration logic only. They do **not** establish that TrueNAS accepts a write, that image data reaches a zvol, or that a guest boots or completes provisioning.
+The rehearsal models parent-dataset and fresh zvol creation, a conversion request from a fixed synthetic image identifier into only that run-owned zvol, and rejects a target smaller than the source's recorded virtual size. It then models a stopped/autostart-disabled VM, disk/NoCloud-CDROM/NIC devices, and the fake middleware-created DISPLAY device. It records each acknowledged step in a mode-0600 manifest and keeps ambiguous conversion outcomes manual-review-only without retry. Run its tests with `python3 -m unittest planning.test_mock_install`; these verify orchestration logic only. They do **not** establish that TrueNAS accepts a write, that image data reaches a zvol, or that a guest boots or completes provisioning.
 
 ## Config format
 
