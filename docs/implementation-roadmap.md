@@ -1,13 +1,13 @@
 # Implementation Roadmap
 
-**Current state (2026-10-22):** an experimental offline planner, tested reusable safety helpers, Ubuntu Server artifact/NoCloud preparation, and mock-only orchestration. PR #10 and PR #11 are merged; the latest functional merge commit is `9ef93d5d986545e78f67862a4ba1edc9229ffd0a`. The merged changes include the Beta.2 boolean parser fix, conservative non-sparse zvol policy, simulated seed-ISO ownership reconciliation, and pure dataset-mountpoint path planning. No live writer was added and no Linux VM has been created by this repository.
+**Current state (2026-10-22):** an experimental offline planner, tested reusable safety helpers, Ubuntu Server artifact/NoCloud preparation, and mock-only orchestration. PR #10–#14 are merged; the current `main` head is `d25ceda3d6e8627c7ab06145db152c25550bbef0`. The merged changes include the Beta.2 boolean parser fix, conservative non-sparse zvol policy, simulated seed-ISO ownership reconciliation, and pure dataset-mountpoint path planning. No live installer writer was added and no Linux VM has been created by this repository. A separate, one-time operator-run staging permission probe on Beta.2 is documented below; it did not exercise repository code and was cleaned up.
 
 **GitHub status verified 2026-10-22:** PR #10 was merged by merge commit `61515c2ecbbf530e7cfe860a8e3f1c902c75c462`; PR #11 was squash-merged as `9ef93d5d986545e78f67862a4ba1edc9229ffd0a`. Planner checks passed on both PR heads and on both resulting `main` commits, including final run `39795854209`. These are CI/offline results only and do not establish live TrueNAS behavior.
 
 ## GitHub tracking milestones
 
 - **#1 Offline Mock Review and CI** — complete and closed after PR #6 merged and hosted checks passed; no due date.
-- **#2 Disposable Validation and Profile Support** — remains open and assigned to issue #1; no due date. Requires separate authorization and an isolated disposable target; no live operations are currently authorized.
+- **#2 Disposable Validation and Profile Support** — remains open and assigned to issue #1; no due date. A one-time staging-only permission probe was authorized and completed; all further live operations, including conversion or VM testing, still require separate authorization and an isolated disposable target.
 
 ## Guardrails
 
@@ -56,7 +56,9 @@ Keep `LIVE_PROFILE_ALLOWLIST` empty. The offline contract in `docs/ubuntu-server
 
 **Mock staging-plan integration (2026-10-22):** the offline rehearsal now derives candidate image/seed paths from the exact per-VM filesystem dataset row; invalid mountpoints stop the mock flow before zvol creation. This is fake query data only and performs no host filesystem access or staging.
 
-**Remaining before any live writer:** stage the verified image/seed only beneath a mountpoint read back from the live host; add real file-owner and libvirt traversal/read-access checks; validate conversion, device attachment, and read-back on an authorized disposable target. The mock path candidates and passing read-only preflight do not replace these gates. Any TrueNAS write/boot test still requires separate authorization and an isolated disposable target. All four distro profiles remain experimental.
+**Operator-provided staging permission probe (2026-10-22):** on `TrueNAS-26.0.0-BETA.2`, a separately authorized disposable child filesystem dataset was created outside the installer, and root created a 17-byte mode-0600 file in its read-back mountpoint. `libvirt-qemu` could traverse and list the directory but could neither write there nor read the root-owned file. The file was removed; non-recursive, non-forced dataset deletion returned true, and an exact follow-up query returned no row. This verifies only that limited host path/permission case; it did not exercise installer code, image conversion, zvols, CDROM attachment, VM creation, or boot.
+
+**Remaining before any live writer:** determine the actual access principal and required ownership/mode behavior for conversion and CDROM paths; the probe shows a root-owned mode-0600 file is not readable by `libvirt-qemu`. Then validate conversion, device attachment, and read-back on an authorized disposable target. The mock path candidates, read-only preflight, and simple file probe do not replace these gates. Any further TrueNAS write/boot test still requires separate authorization and an isolated disposable target. All four distro profiles remain experimental.
 
 ### 4. Validate Ubuntu Server in a disposable environment
 
