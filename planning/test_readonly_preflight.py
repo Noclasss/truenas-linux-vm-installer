@@ -246,14 +246,14 @@ class ReadOnlyPreflightCLITests(unittest.TestCase):
         report = ReadOnlyPreflightReport(
             truenas_version=fixture["truenas_version"],
             checked_method_contracts=fixture["method_count"],
-            vm_name="linuxprobe01",
-            pool_name="NVME2",
-            bridge_name="br01",
+            vm_name="testvm01",
+            pool_name="testpool",
+            bridge_name="brtest",
             checks=(),
         )
         args = [
-            "--profile", "ubuntu-server", "--vm-name", "linuxprobe01",
-            "--pool", "NVME2", "--bridge", "br01", "--vcpus", "2",
+            "--profile", "ubuntu-server", "--vm-name", "testvm01",
+            "--pool", "testpool", "--bridge", "brtest", "--vcpus", "2",
             "--memory-mib", "4096", "--disk-gib", "16",
             "--host-reserve-mib", "16384", "--pool-reserve-mib", "102400",
         ]
