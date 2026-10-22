@@ -303,6 +303,10 @@ class UbuntuServerProfileTests(unittest.TestCase):
             (rows + rows, dataset_id),
             ([{"id": dataset_id, "type": "VOLUME", "mountpoint": "/mnt/pool/linux-vms/MockUbuntu"}], dataset_id),
             ([{"id": dataset_id, "type": "FILESYSTEM", "mountpoint": None}], dataset_id),
+            ([{"id": dataset_id, "type": "FILESYSTEM", "mountpoint": "/mnt/otherpool/linux-vms/MockUbuntu"}], dataset_id),
+            ([{"id": dataset_id, "type": "FILESYSTEM", "mountpoint": "/mnt/pool-extra/linux-vms/MockUbuntu"}], dataset_id),
+            (rows, "pool"),
+            (rows, "pool/../MockUbuntu"),
             (rows, "pool/linux-vms/OtherVM"),
         )
         for inventory, selected_id in invalid:

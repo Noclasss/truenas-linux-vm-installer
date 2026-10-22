@@ -52,6 +52,7 @@ class MockInstallOrchestrationTests(unittest.TestCase):
             "/mnt/mock-pool/../outside",
             "/outside/mock-pool/linux-vms/MockUbuntu",
             "/mnt/mock-pool/linux-vms/MockUbuntu/./child",
+            "/mnt/other-pool/linux-vms/MockUbuntu",
         )
         for mountpoint in unsafe_mountpoints:
             with self.subTest(mountpoint=mountpoint), tempfile.TemporaryDirectory() as directory:

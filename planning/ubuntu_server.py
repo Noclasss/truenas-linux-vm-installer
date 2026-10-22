@@ -132,8 +132,9 @@ def ubuntu_server_stage_paths_from_dataset_rows(
     dataset_rows: Sequence[Mapping[str, object]], dataset_id: str
 ) -> dict[str, Path]:
     """Resolve staging targets only from one exact filesystem dataset row."""
-    if not isinstance(dataset_id, str) or not dataset_id:
-        raise ProfileValidationError("dataset identifier must be a non-empty exact name")
+    dataset_parts = dataset_id.split("/") if isinstance(dataset_id, str) else []
+    if len(dataset_parts) < 2 or any(not _SAFE_OUTPUT_NAME.fullmatch(part) for part in dataset_parts):
+        raise ProfileValidationError("dataset identifier must contain a safe pool and child dataset")
     if not isinstance(dataset_rows, (list, tuple)):
         raise ProfileValidationError("dataset inventory must be a list of query rows")
     matches = [row for row in dataset_rows if isinstance(row, Mapping) and row.get("id") == dataset_id]
@@ -143,7 +144,10 @@ def ubuntu_server_stage_paths_from_dataset_rows(
     mountpoint = dataset.get("mountpoint")
     if dataset.get("type") != "FILESYSTEM" or not isinstance(mountpoint, str):
         raise ProfileValidationError("planned child dataset lacks a filesystem type or reported mountpoint")
-    return ubuntu_server_dataset_stage_paths(mountpoint)
+    paths = ubuntu_server_dataset_stage_paths(mountpoint)
+    if PurePosixPath(mountpoint).parts[:3] != ("/", "mnt", dataset_parts[0]):
+        raise ProfileValidationError("reported mountpoint is outside the selected pool mountpoint")
+    return paths
 
 
 def stage_ubuntu_server_raw_image(
