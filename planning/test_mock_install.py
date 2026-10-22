@@ -106,9 +106,12 @@ class MockInstallOrchestrationTests(unittest.TestCase):
                 "status": "acknowledged",
                 "owner_before": "root",
                 "owner_after": "libvirt",
+                "mode_before": 0o600,
+                "mode_after": 0o600,
             },
         )
         self.assertEqual(backend.seed_file_owners["mock://seed/cidata.iso"], "libvirt")
+        self.assertEqual(backend.seed_file_modes["mock://seed/cidata.iso"], 0o600)
         self.assertEqual(
             manifest["image_import"]["destination"],
             "/dev/zvol/mock-pool/linux-vms/MockUbuntu/disk0",
@@ -344,10 +347,51 @@ class MockInstallOrchestrationTests(unittest.TestCase):
         self.assertEqual(manifest["seed_media"]["owner_before"], "root")
         self.assertIsNone(manifest["seed_media"]["owner_after"])
         self.assertEqual(backend.seed_file_owners["mock://seed/cidata.iso"], "libvirt")
+        self.assertEqual(manifest["seed_media"]["mode_before"], 0o600)
+        self.assertIsNone(manifest["seed_media"]["mode_after"])
+        self.assertEqual(backend.seed_file_modes["mock://seed/cidata.iso"], 0o600)
         self.assertIn(
             "seed_owner_transfer_applied_without_acknowledgement",
             assessment.discrepancies,
         )
+        self.assertEqual(assessment.disposition, "manual_review_required")
+
+    def test_mock_cdrom_rejects_broadened_seed_mode_without_owner_transfer(self):
+        backend = make_backend()
+        backend.seed_file_modes["mock://seed/cidata.iso"] = 0o644
+        backend.vms[1] = {"id": 1, "name": "MockUbuntu"}
+
+        with self.assertRaisesRegex(MockInstallError, "mode must remain private"):
+            backend.call(
+                "vm.device.create",
+                [{
+                    "vm": 1,
+                    "attributes": {
+                        "dtype": "CDROM",
+                        "path": "mock://seed/cidata.iso",
+                    },
+                }],
+            )
+
+        self.assertEqual(backend.seed_file_owners["mock://seed/cidata.iso"], "root")
+        self.assertEqual(backend.seed_file_modes["mock://seed/cidata.iso"], 0o644)
+        self.assertEqual(backend.devices, {})
+
+    def test_reconciliation_detects_seed_mode_change_after_acknowledged_attach(self):
+        backend = make_backend()
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = Path(directory) / "manifest.json"
+            run_mock_install(
+                request(), backend, manifest_path=manifest_path,
+                confirmation="CREATE MOCK MockUbuntu",
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        manifest["status"] = "reconcile_required"
+        manifest["failure_type"] = "TestSeedModeChange"
+        backend.seed_file_modes["mock://seed/cidata.iso"] = 0o644
+        assessment = inspect_mock_reconciliation(manifest, backend)
+        self.assertIn("seed_mode_readback_mismatch", assessment.discrepancies)
         self.assertEqual(assessment.disposition, "manual_review_required")
 
     def test_mock_backend_rejects_implicit_or_missing_dataset_ancestors(self):

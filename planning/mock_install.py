@@ -48,6 +48,7 @@ _MOCK_POOL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _MOCK_SEED_IDENTIFIER = "mock://seed/cidata.iso"
 _MOCK_SEED_OWNER_BEFORE_ATTACH = "root"
 _MOCK_SEED_OWNER_AFTER_ATTACH = "libvirt"
+_MOCK_SEED_MODE = 0o600
 _MOCK_SOURCE_IMAGE = "mock://artifact/ubuntu-server.qcow2"
 _MOCK_SOURCE_IMAGE_VIRTUAL_SIZE_BYTES = 3_758_096_384
 
@@ -90,6 +91,9 @@ class MockMiddleware:
     converted_zvols: dict[str, str] = field(default_factory=dict)
     seed_file_owners: dict[str, str] = field(
         default_factory=lambda: {_MOCK_SEED_IDENTIFIER: _MOCK_SEED_OWNER_BEFORE_ATTACH}
+    )
+    seed_file_modes: dict[str, int] = field(
+        default_factory=lambda: {_MOCK_SEED_IDENTIFIER: _MOCK_SEED_MODE}
     )
     dataset_mountpoints: dict[str, str] = field(default_factory=dict)
     _fresh_run_zvols: set[str] = field(default_factory=set)
@@ -208,9 +212,15 @@ class MockMiddleware:
                     raise MockInstallError("mock CDROM accepts only the fixed synthetic seed identifier")
                 if self.seed_file_owners.get(seed_path) != _MOCK_SEED_OWNER_BEFORE_ATTACH:
                     raise MockInstallError("mock seed ownership is not in the expected pre-attach state")
+                if self.seed_file_modes.get(seed_path) != _MOCK_SEED_MODE:
+                    raise MockInstallError("mock seed mode must remain private at 0600")
                 # Model the Beta.2 CDROM delegate's possible ownership transfer.
-                # This is fake in-memory state, not host filesystem evidence.
+                # The owner changes; mode stays 0600, so owner-read transfers to libvirt.
+                # This is file-mode-only mock state, not host path-access evidence.
                 self.seed_file_owners[seed_path] = _MOCK_SEED_OWNER_AFTER_ATTACH
+                if not self.seed_file_modes[seed_path] & 0o400:
+                    self.seed_file_owners[seed_path] = _MOCK_SEED_OWNER_BEFORE_ATTACH
+                    raise MockInstallError("mock libvirt owner cannot read the seed at mode 0600")
             return self._create_device(vm_id, attributes)
         raise MockInstallError("mock write method is not supported")
 
@@ -365,6 +375,8 @@ def run_mock_install(
             "status": "not_attached",
             "owner_before": _MOCK_SEED_OWNER_BEFORE_ATTACH,
             "owner_after": None,
+            "mode_before": _MOCK_SEED_MODE,
+            "mode_after": None,
         },
         "preflight": {"shared_parent_state": "not_checked"},
         "created": {"datasets": [], "vm": None, "devices": []},
@@ -488,6 +500,9 @@ def run_mock_install(
                 manifest["seed_media"]["owner_before"] = middleware.seed_file_owners.get(
                     request.seed_identifier
                 )
+                manifest["seed_media"]["mode_before"] = middleware.seed_file_modes.get(
+                    request.seed_identifier
+                )
                 _persist(path, manifest)
             device_result = middleware.call(
                 "vm.device.create", [{"vm": vm_id, "attributes": attributes}]
@@ -501,6 +516,9 @@ def run_mock_install(
             if attributes["dtype"] == "CDROM":
                 manifest["seed_media"]["status"] = "acknowledged"
                 manifest["seed_media"]["owner_after"] = middleware.seed_file_owners.get(
+                    request.seed_identifier
+                )
+                manifest["seed_media"]["mode_after"] = middleware.seed_file_modes.get(
                     request.seed_identifier
                 )
             _persist(path, manifest)
@@ -656,19 +674,30 @@ def inspect_mock_reconciliation(
     else:
         seed_status = seed_media.get("status")
         seed_owner = middleware.seed_file_owners.get(_MOCK_SEED_IDENTIFIER)
+        seed_mode = middleware.seed_file_modes.get(_MOCK_SEED_IDENTIFIER)
         if seed_status == "not_attached":
             if seed_owner != seed_media.get("owner_before"):
                 discrepancies.add("seed_owner_changed_before_attach")
+            if seed_mode != seed_media.get("mode_before"):
+                discrepancies.add("seed_mode_changed_before_attach")
         elif seed_status == "attach_pending":
             discrepancies.add("seed_cdrom_attach_acknowledgement_pending")
             if seed_owner == _MOCK_SEED_OWNER_AFTER_ATTACH:
                 discrepancies.add("seed_owner_transfer_applied_without_acknowledgement")
+            if seed_mode != seed_media.get("mode_before"):
+                discrepancies.add("seed_mode_changed_during_ambiguous_attach")
         elif seed_status == "acknowledged":
             if (
                 seed_media.get("owner_after") != _MOCK_SEED_OWNER_AFTER_ATTACH
                 or seed_owner != seed_media.get("owner_after")
             ):
                 discrepancies.add("seed_owner_readback_mismatch")
+            if (
+                seed_media.get("mode_before") != _MOCK_SEED_MODE
+                or seed_media.get("mode_after") != _MOCK_SEED_MODE
+                or seed_mode != seed_media.get("mode_after")
+            ):
+                discrepancies.add("seed_mode_readback_mismatch")
         else:
             discrepancies.add("invalid_manifest_seed_media_status")
 
