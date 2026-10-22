@@ -43,11 +43,11 @@ A future live adapter must revalidate the selected caller-supplied pool and brid
 2. Create the per-VM filesystem parent:
    `pool.dataset.create([{"name": "<pool>/linux-vms/<vm>", "type": "FILESYSTEM"}])`
 3. Create the VM disk zvol:
-   `pool.dataset.create([{"name": "<pool>/linux-vms/<vm>/disk0", "type": "VOLUME", "volsize": <disk_gib> * 1024**3, "sparse": true}])`
-   Ancestors are explicit; never request `create_ancestors`.
+   `pool.dataset.create([{"name": "<pool>/linux-vms/<vm>/disk0", "type": "VOLUME", "volsize": <disk_gib> * 1024**3, "sparse": false}])`
+   The initial policy is thick provisioned: preflight reserves the full virtual disk size plus the operator reserve, avoiding deliberate thin-provisioning overcommit. Ancestors are explicit; never request `create_ancestors`. Runtime allocation and API acceptance remain unverified.
 4. Model image import into the fresh zvol:
    `vm.device.convert([{ "source": "mock://artifact/ubuntu-server.qcow2", "destination": "/dev/zvol/mock-pool/linux-vms/<vm>/disk0" }])`
-   The synthetic call is not an actual conversion. The mock rejects targets that are pre-existing or smaller than the pinned source's virtual size. `sparse: true` above is only the current mock payload; live sparse-zvol policy remains unresolved.
+   The synthetic call is not an actual conversion. The mock rejects targets that are pre-existing or smaller than the pinned source's virtual size.
 5. Create the VM:
    `vm.create([{ "name": <vm>, "memory": <memory_mib>, "vcpus": <vcpus>, "bootloader": "UEFI", "enable_secure_boot": false, "autostart": false, "ensure_display_device": true, "description": "EXPERIMENTAL MOCK ONLY - not a live installer VM" }])`
 6. Attach devices, one request at a time with a manifest update after each acknowledged response:
@@ -55,7 +55,19 @@ A future live adapter must revalidate the selected caller-supplied pool and brid
    - NoCloud seed: `vm.device.create([{ "vm": <vm_id>, "attributes": {"dtype": "CDROM", "path": "mock://seed/cidata.iso"} }])`
    - Network: `vm.device.create([{ "vm": <vm_id>, "attributes": {"dtype": "NIC", "nic_attach": <caller-selected bridge>, "type": "VIRTIO"} }])`
 
-The fake models the middleware-created DISPLAY device requested by `ensure_display_device`; it is recorded and included in read-back. Whether the selected TrueNAS build creates and reports that device exactly this way is unverified. The mock CDROM URI is deliberately nonfunctional and must never be used live. A real seed path, storage visibility, sparse-zvol policy, and all write acceptance remain unresolved.
+The fake models the middleware-created DISPLAY device requested by `ensure_display_device`; it is recorded and included in read-back. Whether the selected TrueNAS build creates and reports that device exactly this way is unverified. The mock CDROM URI is deliberately nonfunctional and must never be used live. The fake also models a possible root-to-libvirt seed-owner transfer, persists attach-pending/acknowledged ownership state, and reports an applied-but-unacknowledged transfer during mock reconciliation. This is an in-memory failure simulation, not a host permission or ownership test. A real seed path, storage visibility, and all write acceptance remain unresolved.
+
+## Beta.2 image-conversion source review
+
+The official middleware source at tag `TS-26.0.0-BETA.2`, commit `69e77a6f2e089d392db6e4a3df146bcbe8fba98e`, shows that `vm.device.convert` chooses conversion direction from a case-sensitive image suffix (`qcow2`, `qed`, `raw`, `vdi`, `vhdx`, or `vmdk`). Image-to-zvol conversion requires an existing image file below `/mnt/` (not directly in `/mnt`), rejects protected internal mount sources, requires an existing ZFS volume and `/dev/zvol` node, checks that the zvol is large enough, and refuses a zvol attached to a running VM. It then invokes `qemu-img convert` with raw output. This is source review, not runtime validation or proof of authorization/write acceptance.
+
+Therefore a future live flow must place the verified image at a supported lowercase suffix such as `.qcow2` or `.raw` under the exact per-VM dataset mountpoint returned by TrueNAS; it must not pass the original `.img`/`.artifact` name or a `/tmp` path to `vm.device.convert`. The raw staging helper now enforces lowercase `.raw`. `ubuntu_server_stage_paths_from_dataset_rows()` builds fixed image/seed paths only from exactly one matching filesystem dataset row and a canonical child mountpoint under `/mnt`, rejecting the pool-root dataset and traversal. It is a pure path-planning helper; it does not query TrueNAS or stage files. The seed ISO must also be staged at an exact host-visible dataset path, but its CDROM open/permission behavior still needs validation on the disposable VM. Do not hardcode a mountpoint or weaken file permissions to work around an access failure.
+
+## Beta.2 CDROM path and ownership source review
+
+The official middleware source at the same tag/commit, `src/middlewared/middlewared/utils/libvirt/cdrom.py`, adds an important `vm.device.create` side effect. It requires the CDROM path to reside within an imported non-boot pool and rejects a file located in the pool's root dataset; VM resources must be under a child dataset. It checks whether the configured libvirt service user can read the file and traverse its parent paths. If that user cannot read it, the delegate attempts to `chown` the ISO to the libvirt UID/GID, then checks access again; if access still fails, it restores the original owner and rejects the device.
+
+Consequently, creating a CDROM device can change the seed ISO's owner even when the VM-device request is the only visible API call. A future installer must disclose and record this possible ownership transfer in its plan/manifest, keep the seed inside the run-owned child dataset with restrictive file permissions, and re-read the exact owner after the call. Do not use world-readable permissions as a workaround. Reconcile ownership and device state before any retry or cleanup after an ambiguous response. This is exact-build source review only; it does not prove the host filesystem permissions or libvirt access behavior on the target machine.
 
 ## Preflight and conflicts
 
