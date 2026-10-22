@@ -100,7 +100,7 @@ class MockInstallOrchestrationTests(unittest.TestCase):
                     "name": "mock-pool/linux-vms/MockUbuntu/disk0",
                     "type": "VOLUME",
                     "volsize": 32 * 1024**3,
-                    "sparse": True,
+                    "sparse": False,
                 },
             ],
         )
@@ -125,7 +125,7 @@ class MockInstallOrchestrationTests(unittest.TestCase):
                 "name": "mock-pool/linux-vms/MockUbuntu/disk0",
                 "type": "VOLUME",
                 "volsize": 32 * 1024**3,
-                "sparse": True,
+                "sparse": False,
             },
         )
         self.assertEqual(
@@ -219,7 +219,7 @@ class MockInstallOrchestrationTests(unittest.TestCase):
         zvol = "mock-pool/linux-vms/MockUbuntu/disk0"
         backend.call(
             "pool.dataset.create",
-            [{"name": zvol, "type": "VOLUME", "volsize": 1, "sparse": True}],
+            [{"name": zvol, "type": "VOLUME", "volsize": 1, "sparse": False}],
         )
         with self.assertRaisesRegex(MockInstallError, "smaller than the synthetic source image"):
             backend.call(

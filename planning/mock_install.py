@@ -373,7 +373,7 @@ def run_mock_install(
 
         zvol_result = middleware.call(
             "pool.dataset.create",
-            [{"name": zvol, "type": "VOLUME", "volsize": request.disk_gib * 1024**3, "sparse": True}],
+            [{"name": zvol, "type": "VOLUME", "volsize": request.disk_gib * 1024**3, "sparse": False}],
         )
         manifest["created"]["datasets"].append({"id": zvol_result["id"], "type": "VOLUME"})
         _persist(path, manifest)
