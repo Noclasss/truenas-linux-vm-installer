@@ -63,6 +63,12 @@ The official middleware source at tag `TS-26.0.0-BETA.2`, commit `69e77a6f2e089d
 
 Therefore a future live flow must place the verified image at a supported lowercase suffix such as `.qcow2` or `.raw` under the exact per-VM dataset mountpoint returned by TrueNAS; it must not pass the original `.img`/`.artifact` name or a `/tmp` path to `vm.device.convert`. The raw staging helper now enforces lowercase `.raw`. The seed ISO must also be staged at an exact host-visible dataset path, but its CDROM open/permission behavior still needs validation on the disposable VM. Do not hardcode a mountpoint or weaken file permissions to work around an access failure.
 
+## Beta.2 CDROM path and ownership source review
+
+The official middleware source at the same tag/commit, `src/middlewared/middlewared/utils/libvirt/cdrom.py`, adds an important `vm.device.create` side effect. It requires the CDROM path to reside within an imported non-boot pool and rejects a file located in the pool's root dataset; VM resources must be under a child dataset. It checks whether the configured libvirt service user can read the file and traverse its parent paths. If that user cannot read it, the delegate attempts to `chown` the ISO to the libvirt UID/GID, then checks access again; if access still fails, it restores the original owner and rejects the device.
+
+Consequently, creating a CDROM device can change the seed ISO's owner even when the VM-device request is the only visible API call. A future installer must disclose and record this possible ownership transfer in its plan/manifest, keep the seed inside the run-owned child dataset with restrictive file permissions, and re-read the exact owner after the call. Do not use world-readable permissions as a workaround. Reconcile ownership and device state before any retry or cleanup after an ambiguous response. This is exact-build source review only; it does not prove the host filesystem permissions or libvirt access behavior on the target machine.
+
 ## Preflight and conflicts
 
 ### Read-only preflight prototype
