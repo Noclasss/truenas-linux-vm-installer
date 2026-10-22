@@ -41,10 +41,20 @@ No live Linux VM has been created or validated by this repository. Operator-prov
 
 The recorded merges and offline checks do not establish live TrueNAS preflight, write acceptance, VM creation, guest provisioning, or boot validation. The project remains experimental, `LIVE_PROFILE_ALLOWLIST` remains empty, and all four profiles remain experimental.
 
-## Try the offline preview
+## Quick start (preview only)
+
+From a reviewed local checkout, run the guided preview:
 
 ```sh
-python3 planning/preview.py --config planning/examples/vm.json
+./install.sh --interactive
+```
+
+The launcher resolves the checked-out repository and runs the offline planner; it does not download code, contact TrueNAS, create a manifest, or install a VM. It prompts for the profile, VM name, pool, bridge, CPU, RAM, and disk size, then prints a JSON plan. All profiles remain experimental and the plan cannot be applied. A real guided installer still requires the live preflight, image-to-zvol import, resource read-back, and disposable boot gates below; this is not an install command yet.
+
+For a config-file preview:
+
+```sh
+./install.sh --config planning/examples/vm.json
 ```
 
 See [planner documentation](planning/README.md) for inventory checks, examples,
