@@ -1,11 +1,14 @@
 """Tests for the read-only, no-write TrueNAS preflight."""
 from __future__ import annotations
 
+import contextlib
 import copy
+import io
 import json
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from planning.readonly_preflight import (
     PreflightError,
@@ -232,6 +235,34 @@ class ReadOnlyPreflightTests(unittest.TestCase):
             with self.subTest(changes=changes):
                 client = self.assert_rejected(request=replace(self.request, **changes))
                 self.assertEqual(client.calls, [])
+
+
+class ReadOnlyPreflightCLITests(unittest.TestCase):
+    def test_cli_binds_scalar_parsing_to_reviewed_fixture_version(self):
+        from planning import check_readonly_preflight as cli
+        from planning.readonly_preflight import ReadOnlyPreflightReport
+
+        fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        report = ReadOnlyPreflightReport(
+            truenas_version=fixture["truenas_version"],
+            checked_method_contracts=fixture["method_count"],
+            vm_name="testvm01",
+            pool_name="testpool",
+            bridge_name="brtest",
+            checks=(),
+        )
+        args = [
+            "--profile", "ubuntu-server", "--vm-name", "testvm01",
+            "--pool", "testpool", "--bridge", "brtest", "--vcpus", "2",
+            "--memory-mib", "4096", "--disk-gib", "16",
+            "--host-reserve-mib", "16384", "--pool-reserve-mib", "102400",
+        ]
+        with mock.patch.object(cli, "load_fixture", return_value=fixture), \
+             mock.patch.object(cli, "MidcltClient") as client_factory, \
+             mock.patch.object(cli, "run_read_only_preflight", return_value=report), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(args), 0)
+        client_factory.assert_called_once_with(timeout=120, expected_version=fixture["truenas_version"])
 
 
 if __name__ == "__main__":
