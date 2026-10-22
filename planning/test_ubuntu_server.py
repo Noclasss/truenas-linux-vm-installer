@@ -258,6 +258,20 @@ class UbuntuServerProfileTests(unittest.TestCase):
             self.assertNotIn("not installed", str(error.exception))
             self.assertFalse(output.exists())
             self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_raw_staging_requires_raw_suffix_before_download(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache = root / "cache"
+            with patch("planning.ubuntu_server.download_ubuntu_server_image") as download:
+                for name in ("disk.img", "disk.RAW"):
+                    with self.subTest(name=name), self.assertRaisesRegex(
+                        ProfileValidationError, r"lowercase \.raw"
+                    ):
+                        stage_ubuntu_server_raw_image(cache, root / name)
+            download.assert_not_called()
+            self.assertFalse(cache.exists())
+
     def test_offline_raw_staging_success_and_exact_commands(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

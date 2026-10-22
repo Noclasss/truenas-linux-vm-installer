@@ -120,6 +120,8 @@ def stage_ubuntu_server_raw_image(
     raw_output = Path(output_path).expanduser()
     if ".." in raw_output.parts or not _SAFE_OUTPUT_NAME.fullmatch(raw_output.name):
         raise ProfileValidationError("raw image output must have a safe filename and no parent traversal")
+    if raw_output.suffix != ".raw":
+        raise ProfileValidationError("raw image output filename must end in lowercase .raw")
     try:
         cache = ensure_private_cache_dir(Path(cache_dir))
         # Validate the caller-selected destination without changing its mode.
