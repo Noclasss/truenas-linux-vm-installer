@@ -39,7 +39,7 @@ class MiddlewareClientTests(unittest.TestCase):
                 client.call("pool.query")
 
     def test_beta2_virtualization_boolean_literals_are_version_and_method_bound(self):
-        for output, expected in (("True\n", True), ("False\n", False)):
+        for output, expected in (("True", True), ("True\n", True), ("False", False), ("False\n", False)):
             with self.subTest(output=output):
                 client = self.client(expected_version="TrueNAS-26.0.0-BETA.2")
                 result = subprocess.CompletedProcess([], 0, stdout=output, stderr="")
