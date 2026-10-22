@@ -16,9 +16,9 @@ from installer_core import artifacts, middleware, safe_filesystem, schema
 
 
 class MiddlewareClientTests(unittest.TestCase):
-    def client(self):
+    def client(self, expected_version=None):
         with mock.patch.object(middleware.shutil, "which", return_value="/usr/bin/midclt"):
-            return middleware.MidcltClient(timeout=7)
+            return middleware.MidcltClient(timeout=7, expected_version=expected_version)
 
     def test_calls_midclt_with_json_args_and_timeout(self):
         client = self.client()
@@ -37,6 +37,28 @@ class MiddlewareClientTests(unittest.TestCase):
             self.assertEqual(client.call("system.version"), "TrueNAS-TEST-1")
             with self.assertRaisesRegex(middleware.MiddlewareError, "invalid JSON"):
                 client.call("pool.query")
+
+    def test_beta2_virtualization_boolean_literals_are_version_and_method_bound(self):
+        for output, expected in (("True\n", True), ("False\n", False)):
+            with self.subTest(output=output):
+                client = self.client(expected_version="TrueNAS-26.0.0-BETA.2")
+                result = subprocess.CompletedProcess([], 0, stdout=output, stderr="")
+                with mock.patch.object(middleware.subprocess, "run", return_value=result):
+                    self.assertIs(client.call("vm.supports_virtualization"), expected)
+
+        invalid_cases = (
+            ("TrueNAS-26.0.0-BETA.1", "vm.supports_virtualization", "True"),
+            ("TrueNAS-26.0.0-BETA.2", "pool.query", "True"),
+            ("TrueNAS-26.0.0-BETA.2", "vm.supports_virtualization", "TRUE"),
+            ("TrueNAS-26.0.0-BETA.2", "vm.supports_virtualization", "yes"),
+        )
+        for version, method, output in invalid_cases:
+            with self.subTest(version=version, method=method, output=output):
+                client = self.client(expected_version=version)
+                result = subprocess.CompletedProcess([], 0, stdout=output, stderr="")
+                with mock.patch.object(middleware.subprocess, "run", return_value=result):
+                    with self.assertRaisesRegex(middleware.MiddlewareError, "invalid JSON"):
+                        client.call(method)
 
     def test_bad_json_and_command_errors_do_not_leak_output(self):
         client = self.client()

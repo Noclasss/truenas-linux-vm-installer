@@ -116,7 +116,7 @@ python3 planning/check_readonly_preflight.py \
   --host-reserve-mib <mib> --pool-reserve-mib <mib>
 ```
 
-It has been exercised only with fake middleware tests, not against TrueNAS. The operator-provided `TrueNAS-26.0.0-BETA.2` `core.get_methods` capture from `2026-10-21T07:28:31Z` describes available VM memory and pool free space in bytes, and `vm.create.memory` in MiB. The sanitized fixture records these build-specific units, and the preflight fails closed if any are missing or do not match the fixture build. Available memory is still a volatile snapshot. A pass is not authorization to create or start a VM; all profiles remain experimental.
+The operator-provided `TrueNAS-26.0.0-BETA.2` `core.get_methods` capture from `2026-10-21T07:28:31Z` describes available VM memory and pool free space in bytes, and `vm.create.memory` in MiB. The sanitized fixture records these build-specific units, and the preflight fails closed if any are missing or do not match the fixture build. Available memory is still a volatile snapshot. A first operator-run read-only preflight on 2026-10-22 stopped at `vm.supports_virtualization`: `midclt` exited successfully but emitted `True` rather than JSON. The adapter now accepts only exact `True`/`False` literals for that method when the Beta.2 fixture version is selected; all other non-JSON method output remains an error. No write methods were called and no resources were created. A complete passing host preflight remains unverified; a pass would not authorize VM creation.
 
 ## Mock-only orchestration rehearsal
 

@@ -16,6 +16,8 @@ DEFAULT_TIMEOUT_SECONDS = 60
 MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 _METHOD_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.]*\Z")
 _VERSION = re.compile(r"TrueNAS-[A-Za-z0-9._+-]+\Z")
+_BETA2_VERSION = "TrueNAS-26.0.0-BETA.2"
+_BETA2_PLAIN_BOOLEAN_METHODS = frozenset({"vm.supports_virtualization"})
 
 
 class MidcltClient:
@@ -26,13 +28,19 @@ class MidcltClient:
     Mutating calls should be routed through ``SchemaCheckedClient``.
     """
 
-    def __init__(self, executable: str | None = None, timeout: int = DEFAULT_TIMEOUT_SECONDS):
+    def __init__(
+        self,
+        executable: str | None = None,
+        timeout: int = DEFAULT_TIMEOUT_SECONDS,
+        expected_version: str | None = None,
+    ):
         if type(timeout) is not int or timeout <= 0:
             raise MiddlewareError("middleware timeout must be a positive integer")
         self.executable = executable or shutil.which("midclt")
         if not self.executable:
             raise MiddlewareError("midclt was not found; run from an authenticated TrueNAS host shell")
         self.timeout = timeout
+        self.expected_version = expected_version
 
     def close(self) -> None:
         """Match the lifecycle interface of remote middleware clients."""
@@ -72,6 +80,13 @@ class MidcltClient:
         try:
             return json.loads(output)
         except json.JSONDecodeError as exc:
+            # TrueNAS 26 Beta.2 midclt prints this boolean as Python's exact literal.
+            if (
+                self.expected_version == _BETA2_VERSION
+                and method in _BETA2_PLAIN_BOOLEAN_METHODS
+                and output in {"True", "False"}
+            ):
+                return output == "True"
             # Some TrueNAS builds emit system.version as an unquoted scalar.
             if method == "system.version" and _VERSION.fullmatch(output):
                 return output

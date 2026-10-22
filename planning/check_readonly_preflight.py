@@ -51,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     client = None
     try:
         fixture = load_fixture(args.fixture)
-        client = MidcltClient(timeout=120)
+        client = MidcltClient(timeout=120, expected_version=fixture.get("truenas_version"))
         report = run_read_only_preflight(client, fixture, request)
     except (CompatibilityError, MiddlewareError, PreflightError, OSError, ValueError) as exc:
         print(f"Read-only preflight failed: {exc}", file=sys.stderr)
