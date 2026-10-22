@@ -23,6 +23,8 @@ from planning.ubuntu_server import (
     build_seed_iso,
     download_ubuntu_server_image,
     stage_ubuntu_server_raw_image,
+    ubuntu_server_dataset_stage_paths,
+    ubuntu_server_stage_paths_from_dataset_rows,
 )
 from planning.installer_core.artifacts import ArtifactError
 
@@ -271,6 +273,41 @@ class UbuntuServerProfileTests(unittest.TestCase):
                         stage_ubuntu_server_raw_image(cache, root / name)
             download.assert_not_called()
             self.assertFalse(cache.exists())
+
+    def test_dataset_stage_paths_are_fixed_under_canonical_reported_mountpoint(self):
+        paths = ubuntu_server_dataset_stage_paths("/mnt/NVME2/linux-vms/MockUbuntu/")
+        self.assertEqual(paths, {
+            "image": Path("/mnt/NVME2/linux-vms/MockUbuntu/ubuntu-server.raw"),
+            "seed": Path("/mnt/NVME2/linux-vms/MockUbuntu/cidata.iso"),
+        })
+        for mountpoint in (
+            "/mnt", "/mnt/", "/mnt/NVME2", "/mnt/../tmp", "/mnt/pool/../other",
+            "/mnt//pool/data", "relative/path", "/tmp/pool/data",
+            "/mnt/pool\\data", "/mnt/pool\ndata",
+        ):
+            with self.subTest(mountpoint=mountpoint), self.assertRaises(ProfileValidationError):
+                ubuntu_server_dataset_stage_paths(mountpoint)
+
+    def test_stage_paths_require_one_exact_filesystem_dataset_query_row(self):
+        dataset_id = "pool/linux-vms/MockUbuntu"
+        rows = [{"id": dataset_id, "type": "FILESYSTEM", "mountpoint": "/mnt/pool/linux-vms/MockUbuntu"}]
+        self.assertEqual(
+            ubuntu_server_stage_paths_from_dataset_rows(rows, dataset_id),
+            {
+                "image": Path("/mnt/pool/linux-vms/MockUbuntu/ubuntu-server.raw"),
+                "seed": Path("/mnt/pool/linux-vms/MockUbuntu/cidata.iso"),
+            },
+        )
+        invalid = (
+            ([], dataset_id),
+            (rows + rows, dataset_id),
+            ([{"id": dataset_id, "type": "VOLUME", "mountpoint": "/mnt/pool/linux-vms/MockUbuntu"}], dataset_id),
+            ([{"id": dataset_id, "type": "FILESYSTEM", "mountpoint": None}], dataset_id),
+            (rows, "pool/linux-vms/OtherVM"),
+        )
+        for inventory, selected_id in invalid:
+            with self.subTest(inventory=inventory, selected_id=selected_id), self.assertRaises(ProfileValidationError):
+                ubuntu_server_stage_paths_from_dataset_rows(inventory, selected_id)
 
     def test_offline_raw_staging_success_and_exact_commands(self):
         with tempfile.TemporaryDirectory() as directory:

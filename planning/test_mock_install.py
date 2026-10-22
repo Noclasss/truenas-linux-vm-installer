@@ -67,6 +67,16 @@ class MockInstallOrchestrationTests(unittest.TestCase):
         self.assertEqual(manifest["image_import"]["status"], "acknowledged")
         self.assertEqual(manifest["image_import"]["source"], "mock://artifact/ubuntu-server.qcow2")
         self.assertEqual(
+            manifest["seed_media"],
+            {
+                "identifier": "mock://seed/cidata.iso",
+                "status": "acknowledged",
+                "owner_before": "root",
+                "owner_after": "libvirt",
+            },
+        )
+        self.assertEqual(backend.seed_file_owners["mock://seed/cidata.iso"], "libvirt")
+        self.assertEqual(
             manifest["image_import"]["destination"],
             "/dev/zvol/mock-pool/linux-vms/MockUbuntu/disk0",
         )
@@ -268,6 +278,32 @@ class MockInstallOrchestrationTests(unittest.TestCase):
             assessment.discrepancies,
         )
         self.assertEqual(backend.writes.count("vm.device.convert"), 1)
+        self.assertEqual(assessment.disposition, "manual_review_required")
+
+    def test_ambiguous_cdrom_attach_tracks_possible_seed_ownership_transfer(self):
+        backend = make_backend(
+            fail_after_apply_method="vm.device.create",
+            fail_after_apply_occurrence=2,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            with self.assertRaisesRegex(MockInstallError, "lost response"):
+                run_mock_install(
+                    request(), backend, manifest_path=path,
+                    confirmation="CREATE MOCK MockUbuntu",
+                )
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            assessment = inspect_mock_reconciliation(manifest, backend)
+
+        self.assertEqual(backend.writes.count("vm.device.create"), 2)
+        self.assertEqual(manifest["seed_media"]["status"], "attach_pending")
+        self.assertEqual(manifest["seed_media"]["owner_before"], "root")
+        self.assertIsNone(manifest["seed_media"]["owner_after"])
+        self.assertEqual(backend.seed_file_owners["mock://seed/cidata.iso"], "libvirt")
+        self.assertIn(
+            "seed_owner_transfer_applied_without_acknowledgement",
+            assessment.discrepancies,
+        )
         self.assertEqual(assessment.disposition, "manual_review_required")
 
     def test_mock_backend_rejects_implicit_or_missing_dataset_ancestors(self):

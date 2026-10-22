@@ -38,6 +38,8 @@ MOCK_WRITE_METHODS: frozenset[str] = frozenset(
 _MOCK_VM_NAME = re.compile(r"[A-Za-z][A-Za-z0-9]{0,62}\Z")
 _MOCK_POOL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _MOCK_SEED_IDENTIFIER = "mock://seed/cidata.iso"
+_MOCK_SEED_OWNER_BEFORE_ATTACH = "root"
+_MOCK_SEED_OWNER_AFTER_ATTACH = "libvirt"
 _MOCK_SOURCE_IMAGE = "mock://artifact/ubuntu-server.qcow2"
 _MOCK_SOURCE_IMAGE_VIRTUAL_SIZE_BYTES = 3_758_096_384
 
@@ -73,11 +75,16 @@ class MockMiddleware:
     bridges: set[str]
     fail_before_method: str | None = None
     fail_after_apply_method: str | None = None
+    fail_after_apply_occurrence: int = 1
     datasets: dict[str, dict[str, Any]] = field(default_factory=dict)
     vms: dict[int, dict[str, Any]] = field(default_factory=dict)
     devices: dict[int, dict[str, Any]] = field(default_factory=dict)
     converted_zvols: dict[str, str] = field(default_factory=dict)
+    seed_file_owners: dict[str, str] = field(
+        default_factory=lambda: {_MOCK_SEED_IDENTIFIER: _MOCK_SEED_OWNER_BEFORE_ATTACH}
+    )
     _fresh_run_zvols: set[str] = field(default_factory=set)
+    _write_apply_counts: dict[str, int] = field(default_factory=dict)
     calls: list[tuple[str, list[Any]]] = field(default_factory=list)
     writes: list[str] = field(default_factory=list)
     _next_id: int = 1
@@ -98,7 +105,11 @@ class MockMiddleware:
                 raise MockInstallError(f"simulated failure before applying {method}")
             self.writes.append(method)
             result = self._apply_write(method, params)
-            if self.fail_after_apply_method == method:
+            self._write_apply_counts[method] = self._write_apply_counts.get(method, 0) + 1
+            if (
+                self.fail_after_apply_method == method
+                and self._write_apply_counts[method] == self.fail_after_apply_occurrence
+            ):
                 self.fail_after_apply_method = None
                 raise MockAmbiguousWrite(f"simulated lost response after {method}")
             return result
@@ -178,6 +189,15 @@ class MockMiddleware:
             attributes = spec["attributes"]
             if attributes.get("dtype") == "NIC" and attributes.get("nic_attach") not in self.bridges:
                 raise MockInstallError("mock NIC bridge is not in the supplied inventory")
+            if attributes.get("dtype") == "CDROM":
+                seed_path = attributes.get("path")
+                if seed_path != _MOCK_SEED_IDENTIFIER:
+                    raise MockInstallError("mock CDROM accepts only the fixed synthetic seed identifier")
+                if self.seed_file_owners.get(seed_path) != _MOCK_SEED_OWNER_BEFORE_ATTACH:
+                    raise MockInstallError("mock seed ownership is not in the expected pre-attach state")
+                # Model the Beta.2 CDROM delegate's possible ownership transfer.
+                # This is fake in-memory state, not host filesystem evidence.
+                self.seed_file_owners[seed_path] = _MOCK_SEED_OWNER_AFTER_ATTACH
             return self._create_device(vm_id, attributes)
         raise MockInstallError("mock write method is not supported")
 
@@ -327,12 +347,19 @@ def run_mock_install(
             "source": _MOCK_SOURCE_IMAGE,
             "destination": disk_path,
         },
+        "seed_media": {
+            "identifier": request.seed_identifier,
+            "status": "not_attached",
+            "owner_before": _MOCK_SEED_OWNER_BEFORE_ATTACH,
+            "owner_after": None,
+        },
         "preflight": {"shared_parent_state": "not_checked"},
         "created": {"datasets": [], "vm": None, "devices": []},
         "notes": [
             "No TrueNAS API, download, real image conversion, host storage, or VM start occurred.",
             "Mock identifier paths are synthetic and must never be used as live paths.",
             "Dataset ancestors are created explicitly and recorded; create_ancestors is never used.",
+            "The mock CDROM attach models a possible root-to-libvirt seed-ISO ownership transfer only in memory; it proves no host behavior.",
         ],
     }
     try:
@@ -426,6 +453,12 @@ def run_mock_install(
             {"dtype": "NIC", "nic_attach": request.bridge, "type": "VIRTIO"},
         ]
         for attributes in device_specs:
+            if attributes["dtype"] == "CDROM":
+                manifest["seed_media"]["status"] = "attach_pending"
+                manifest["seed_media"]["owner_before"] = middleware.seed_file_owners.get(
+                    request.seed_identifier
+                )
+                _persist(path, manifest)
             device_result = middleware.call(
                 "vm.device.create", [{"vm": vm_id, "attributes": attributes}]
             )
@@ -435,6 +468,11 @@ def run_mock_install(
                 "dtype": attributes["dtype"],
                 "attributes": attributes,
             })
+            if attributes["dtype"] == "CDROM":
+                manifest["seed_media"]["status"] = "acknowledged"
+                manifest["seed_media"]["owner_after"] = middleware.seed_file_owners.get(
+                    request.seed_identifier
+                )
             _persist(path, manifest)
 
         # Read back all exact fake targets, including the middleware-created DISPLAY.
@@ -581,6 +619,28 @@ def inspect_mock_reconciliation(
                 discrepancies.add(f"unrecorded_image_import:{zvol}")
         else:
             discrepancies.add("invalid_manifest_image_import_status")
+
+    seed_media = manifest.get("seed_media")
+    if not isinstance(seed_media, dict) or seed_media.get("identifier") != _MOCK_SEED_IDENTIFIER:
+        discrepancies.add("invalid_manifest_seed_media")
+    else:
+        seed_status = seed_media.get("status")
+        seed_owner = middleware.seed_file_owners.get(_MOCK_SEED_IDENTIFIER)
+        if seed_status == "not_attached":
+            if seed_owner != seed_media.get("owner_before"):
+                discrepancies.add("seed_owner_changed_before_attach")
+        elif seed_status == "attach_pending":
+            discrepancies.add("seed_cdrom_attach_acknowledgement_pending")
+            if seed_owner == _MOCK_SEED_OWNER_AFTER_ATTACH:
+                discrepancies.add("seed_owner_transfer_applied_without_acknowledgement")
+        elif seed_status == "acknowledged":
+            if (
+                seed_media.get("owner_after") != _MOCK_SEED_OWNER_AFTER_ATTACH
+                or seed_owner != seed_media.get("owner_after")
+            ):
+                discrepancies.add("seed_owner_readback_mismatch")
+        else:
+            discrepancies.add("invalid_manifest_seed_media_status")
 
     dataset_rows = middleware.call("pool.dataset.query", [])
     vm_rows = middleware.call("vm.query", [])

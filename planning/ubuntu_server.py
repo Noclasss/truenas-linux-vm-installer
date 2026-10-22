@@ -10,13 +10,14 @@ import binascii
 import hashlib
 import json
 import os
+import posixpath
 import re
 import stat
 import struct
 import subprocess
 import tempfile
-from pathlib import Path
-from typing import Callable, Sequence
+from pathlib import Path, PurePosixPath
+from typing import Callable, Mapping, Sequence
 
 if __package__:
     from .installer_core.artifacts import ArtifactError, download_and_verify, ensure_private_cache_dir
@@ -96,6 +97,53 @@ def download_ubuntu_server_image(cache_dir: Path) -> Path:
         max_bytes=ARTIFACT_MAX_BYTES,
         expected_size=ARTIFACT_SIZE_BYTES,
     )
+
+
+def ubuntu_server_dataset_stage_paths(dataset_mountpoint: str) -> dict[str, Path]:
+    """Build fixed image/seed paths under a TrueNAS-reported child mountpoint.
+
+    This is lexical planning only: it does not query TrueNAS, inspect the
+    mount, or establish that the host/libvirt user can access these paths.
+    The raw staging helper performs local directory-chain checks when called.
+    """
+    if (
+        not isinstance(dataset_mountpoint, str)
+        or not dataset_mountpoint.startswith("/mnt/")
+        or any(char in dataset_mountpoint for char in "\x00\n\r\\")
+    ):
+        raise ProfileValidationError("dataset mountpoint must be a TrueNAS child path below /mnt")
+    candidate = dataset_mountpoint[:-1] if dataset_mountpoint.endswith("/") else dataset_mountpoint
+    normalized = posixpath.normpath(candidate)
+    parts = PurePosixPath(candidate).parts
+    if (
+        len(parts) < 4
+        or normalized != candidate
+        or any(part in {".", ".."} for part in parts)
+    ):
+        raise ProfileValidationError("dataset mountpoint is not a canonical child path")
+    root = Path(normalized)
+    return {
+        "image": root / "ubuntu-server.raw",
+        "seed": root / "cidata.iso",
+    }
+
+
+def ubuntu_server_stage_paths_from_dataset_rows(
+    dataset_rows: Sequence[Mapping[str, object]], dataset_id: str
+) -> dict[str, Path]:
+    """Resolve staging targets only from one exact filesystem dataset row."""
+    if not isinstance(dataset_id, str) or not dataset_id:
+        raise ProfileValidationError("dataset identifier must be a non-empty exact name")
+    if not isinstance(dataset_rows, (list, tuple)):
+        raise ProfileValidationError("dataset inventory must be a list of query rows")
+    matches = [row for row in dataset_rows if isinstance(row, Mapping) and row.get("id") == dataset_id]
+    if len(matches) != 1:
+        raise ProfileValidationError("exactly one dataset query row must match the planned dataset")
+    dataset = matches[0]
+    mountpoint = dataset.get("mountpoint")
+    if dataset.get("type") != "FILESYSTEM" or not isinstance(mountpoint, str):
+        raise ProfileValidationError("planned child dataset lacks a filesystem type or reported mountpoint")
+    return ubuntu_server_dataset_stage_paths(mountpoint)
 
 
 def stage_ubuntu_server_raw_image(
