@@ -46,6 +46,38 @@ def request(**kwargs):
 
 
 class MockInstallOrchestrationTests(unittest.TestCase):
+    def test_mock_rehearsal_refuses_unsafe_exact_dataset_mountpoint_before_zvol(self):
+        unsafe_mountpoints = (
+            "/mnt/mock-pool",
+            "/mnt/mock-pool/../outside",
+            "/outside/mock-pool/linux-vms/MockUbuntu",
+            "/mnt/mock-pool/linux-vms/MockUbuntu/./child",
+        )
+        for mountpoint in unsafe_mountpoints:
+            with self.subTest(mountpoint=mountpoint), tempfile.TemporaryDirectory() as directory:
+                backend = make_backend(
+                    dataset_mountpoints={
+                        "mock-pool/linux-vms/MockUbuntu": mountpoint
+                    }
+                )
+                path = Path(directory) / "manifest.json"
+                with self.assertRaisesRegex(MockInstallError, "safe staging path"):
+                    run_mock_install(
+                        request(), backend, manifest_path=path,
+                        confirmation="CREATE MOCK MockUbuntu",
+                    )
+                manifest = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(manifest["status"], "reconcile_required")
+                self.assertEqual(manifest["failure_type"], "UnsafeDatasetMountpoint")
+                self.assertFalse(any(
+                    params[0].get("type") == "VOLUME"
+                    for method, params in backend.calls
+                    if method == "pool.dataset.create"
+                ))
+                self.assertEqual(backend.writes.count("pool.dataset.create"), 2)
+                self.assertEqual(backend.writes.count("vm.device.convert"), 0)
+                self.assertEqual(backend.writes.count("vm.create"), 0)
+
     def test_live_profile_allowlist_is_empty_for_every_profile(self):
         self.assertEqual(LIVE_PROFILE_ALLOWLIST, frozenset())
         for profile in ("ubuntu-server", "ubuntu-desktop", "debian-server", "debian-desktop"):
@@ -91,6 +123,17 @@ class MockInstallOrchestrationTests(unittest.TestCase):
             "mock-pool/linux-vms/MockUbuntu/disk0",
         })
         self.assertEqual(manifest["planned"]["shared_parent_dataset"], "mock-pool/linux-vms")
+        self.assertEqual(
+            manifest["staging"],
+            {
+                "dataset_id": "mock-pool/linux-vms/MockUbuntu",
+                "paths": {
+                    "image": "/mnt/mock-pool/linux-vms/MockUbuntu/ubuntu-server.raw",
+                    "seed": "/mnt/mock-pool/linux-vms/MockUbuntu/cidata.iso",
+                },
+                "status": "mock_candidates_only",
+            },
+        )
         self.assertEqual(
             {item["id"] for item in manifest["created"]["datasets"]},
             set(result.dataset_ids),

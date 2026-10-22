@@ -21,7 +21,11 @@ if __package__:
         write_private_new_file,
     )
     from .installer_core.schema import SchemaError, validate_method_request
-    from .ubuntu_server import PROFILE_ID
+    from .ubuntu_server import (
+        PROFILE_ID,
+        ProfileValidationError,
+        ubuntu_server_stage_paths_from_dataset_rows,
+    )
 else:
     from installer_core.safe_filesystem import (
         FilesystemSafetyError,
@@ -29,7 +33,11 @@ else:
         write_private_new_file,
     )
     from installer_core.schema import SchemaError, validate_method_request
-    from ubuntu_server import PROFILE_ID
+    from ubuntu_server import (
+        PROFILE_ID,
+        ProfileValidationError,
+        ubuntu_server_stage_paths_from_dataset_rows,
+    )
 
 LIVE_PROFILE_ALLOWLIST: frozenset[str] = frozenset()
 MOCK_WRITE_METHODS: frozenset[str] = frozenset(
@@ -83,6 +91,7 @@ class MockMiddleware:
     seed_file_owners: dict[str, str] = field(
         default_factory=lambda: {_MOCK_SEED_IDENTIFIER: _MOCK_SEED_OWNER_BEFORE_ATTACH}
     )
+    dataset_mountpoints: dict[str, str] = field(default_factory=dict)
     _fresh_run_zvols: set[str] = field(default_factory=set)
     _write_apply_counts: dict[str, int] = field(default_factory=dict)
     calls: list[tuple[str, list[Any]]] = field(default_factory=list)
@@ -138,6 +147,10 @@ class MockMiddleware:
             if parent_name != pool_name and parent_name not in self.datasets:
                 raise MockInstallError("mock dataset parent must be created explicitly first")
             dataset = {"id": name, **spec}
+            if spec.get("type") == "FILESYSTEM":
+                dataset["mountpoint"] = self.dataset_mountpoints.get(
+                    name, f"/mnt/{name}"
+                )
             self.datasets[name] = dataset
             if spec.get("type") == "VOLUME":
                 self._fresh_run_zvols.add(name)
@@ -357,7 +370,7 @@ def run_mock_install(
         "created": {"datasets": [], "vm": None, "devices": []},
         "notes": [
             "No TrueNAS API, download, real image conversion, host storage, or VM start occurred.",
-            "Mock identifier paths are synthetic and must never be used as live paths.",
+            "The image/seed staging paths are mock candidates derived from fake dataset-query rows only; no host filesystem was accessed.",
             "Dataset ancestors are created explicitly and recorded; create_ancestors is never used.",
             "The mock CDROM attach models a possible root-to-libvirt seed-ISO ownership transfer only in memory; it proves no host behavior.",
         ],
@@ -396,6 +409,23 @@ def run_mock_install(
             "pool.dataset.create", [{"name": parent, "type": "FILESYSTEM"}]
         )
         manifest["created"]["datasets"].append({"id": parent_result["id"], "type": "FILESYSTEM"})
+        _persist(path, manifest)
+        try:
+            dataset_rows = middleware.call("pool.dataset.query", [])
+            stage_paths = ubuntu_server_stage_paths_from_dataset_rows(dataset_rows, parent)
+        except ProfileValidationError as exc:
+            manifest["status"] = "reconcile_required"
+            manifest["failure_type"] = "UnsafeDatasetMountpoint"
+            manifest["notes"].append(
+                "Staging paths were not resolved because the exact child dataset row failed validation."
+            )
+            _persist(path, manifest)
+            raise MockInstallError("staging mountpoint validation failed; safe staging path cannot be proven") from exc
+        manifest["staging"] = {
+            "dataset_id": parent,
+            "paths": {key: str(value) for key, value in stage_paths.items()},
+            "status": "mock_candidates_only",
+        }
         _persist(path, manifest)
 
         zvol_result = middleware.call(
@@ -538,7 +568,7 @@ def run_mock_install(
             if isinstance(exc, MockAmbiguousWrite) or middleware.writes
             else "failed_no_automatic_cleanup"
         )
-        manifest["failure_type"] = type(exc).__name__
+        manifest.setdefault("failure_type", type(exc).__name__)
         try:
             _persist(path, manifest)
         except (OSError, FilesystemSafetyError):
