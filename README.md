@@ -31,15 +31,16 @@ All profiles are experimental until each has passed automated tests and disposab
 
 No live Linux VM has been created or validated by this repository. Operator-provided read-only compatibility output for commit `1b10b439f9bf2d10ff1afa0da228b30416043bc9` records a match for all 20 selected request/return schema contracts on `TrueNAS-26.0.0-BETA.2`, using only `system.version` and `core.get_methods`; no write methods were called. On 2026-10-22, operator-provided output from the checkout pinned to `9e89be1b932750d3010f40cd68a916b8afd43a70` reports that the read-only preflight passed on that build, including pool, bridge, collision, virtualization/vCPU, and memory checks. The output reports no write methods or resource creation. This is operator-provided evidence, not independently reproduced; a read-only pass does not establish write acceptance, VM creation, guest boot, or first-boot behavior.
 
-## Merge status (2026-10-21)
+## Merge history
 
 - PR #3 (`fix/readonly-preflight-memory-units`) was squash-merged into `feat/multi-distro-installer` as `4ddf0b79a9c62658fc6aeabe88b1adafe860d004`; PR #2 was then squash-merged into `main` as `f40ca4c8cd520a6cbae0d9732cb43e9d59a16dc4`.
 - Documentation PR #5 was squash-merged as `5393a2fea8d32fe896bfcc54163183fd4834c074`; its push Actions run [39656161788](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39656161788) succeeded (hosted test count unknown). PR #6 was then squash-merged as `f72d9f43bad386a939bac8de0044298cbebf18d7`; documentation-only PR #7 was later merged as `76c598687e953c7b2fa53f63f2476a751b905691`, with successful post-merge run [39671265846](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39671265846). PR #4 remains open/draft and superseded by #5.
 - PR #6 (`feat/mock-fresh-zvol-import`) was squash-merged into `main` on 2026-10-21. Its 142-test local suite passed; PR-head planner run [39669242388](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39669242388) and post-merge push run [39669932188](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39669932188) succeeded. The merged changes are mock/offline only.
 - Milestone #1, **Offline Mock Review and CI**, is complete and closed with PR #6. Milestone #2, **Disposable Validation and Profile Support**, remains open and tracks issue #1; neither milestone has a due date, and milestone #2 remains authorization-gated.
 - The earlier 19-method count describes the initial fixture; the operator's exact-build comparison matched all 20 contracts on `TrueNAS-26.0.0-BETA.2`, using only `system.version` and `core.get_methods` and no write methods.
+- On 2026-10-22, PR #10 was merged into `main` at `61515c2ecbbf530e7cfe860a8e3f1c902c75c462`; its planner check and post-merge push run [39794106338](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39794106338) passed. PR #11 was then squash-merged at `9ef93d5d986545e78f67862a4ba1edc9229ffd0a`; its planner check and final push run [39795854209](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39795854209) passed. The PR #11 merge commit was the functional `main` head before this docs-only status refresh.
 
-The recorded merges and offline checks do not establish live TrueNAS preflight, write acceptance, VM creation, guest provisioning, or boot validation. The project remains experimental, `LIVE_PROFILE_ALLOWLIST` remains empty, and all four profiles remain experimental.
+The recorded merges and offline checks do not establish live TrueNAS write acceptance, VM creation, guest provisioning, or boot validation. The project remains experimental, `LIVE_PROFILE_ALLOWLIST` remains empty, and all four profiles remain experimental.
 
 ## Quick start (preview only)
 
