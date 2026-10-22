@@ -82,12 +82,13 @@ python3 planning/verify_compatibility.py
 
 The exact-build probe output for commit `1b10b439f9bf2d10ff1afa0da228b30416043bc9` matched all 20 request/return schema contracts on Beta.2. It called only `system.version` and `core.get_methods`; no write methods were called. This establishes metadata compatibility only; it does not prove TrueNAS accepts a write, validate runtime response data, or validate VM boot. Do not use this Beta fixture as evidence for another TrueNAS build. The probe inspects conversion metadata only and never invokes conversion.
 
-## Repository merge status (2026-10-21)
+## Repository merge status (verified 2026-10-22)
 
 - PR #3 (`fix/readonly-preflight-memory-units`) was squash-merged into `feat/multi-distro-installer` as `4ddf0b79a9c62658fc6aeabe88b1adafe860d004`; PR #2 (`feat/multi-distro-installer`) was then squash-merged into `main` as `f40ca4c8cd520a6cbae0d9732cb43e9d59a16dc4`. Documentation PR #5 was squash-merged as `5393a2fea8d32fe896bfcc54163183fd4834c074`; mock-only PR #6 as `f72d9f43bad386a939bac8de0044298cbebf18d7`; and docs-only PR #7 as `76c598687e953c7b2fa53f63f2476a751b905691`.
 - PR #6's planner run `39669242388` and post-merge push run `39669932188` succeeded; 142 local tests passed. PR #7's planner run `39671161053` and post-merge push run `39671265846` also succeeded. Hosted test counts were not independently retrieved. The earlier main push run `39656161788` and 138-test local baseline describe the previous main state.
-- PR #4 remains open/draft and superseded by #5; it should not be merged as-is. Milestone #1, **Offline Mock Review and CI**, is complete and closed with PR #6. Issue #1 remains open in milestone #2, **Disposable Validation and Profile Support**; no due dates are set.
+- PR #4 was closed without merging on 2026-10-22 after being superseded by #5. Milestone #1, **Offline Mock Review and CI**, is complete and closed with PR #6. Issue #1 remains open in milestone #2, **Disposable Validation and Profile Support**; no due dates are set.
 - The earlier 19-method count refers to the initial fixture. The merged fixture contains 20 selected request/return contracts; the operator's exact-build comparison matched all 20 on `TrueNAS-26.0.0-BETA.2`, using only `system.version` and `core.get_methods` and no write methods.
+- PR #17 (`ebc8081aa23d4ba43071c09420e0c36c141d95b1`) and PR #18 (`506c3d201073db00266439cf56802b11abbc5551`) are merged. Their hosted planner runs [39832859709](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39832859709) and [39855166968](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39855166968) passed; PR descriptions report 150 and 152 local tests. Current `main` is `506c3d201073db00266439cf56802b11abbc5551`.
 - Merge and CI evidence do not establish live preflight, write acceptance, VM creation, or boot validation. All four profiles remain experimental, and the live-profile allowlist remains empty.
 
 The examples are fictional. Copy and edit them locally rather than committing
