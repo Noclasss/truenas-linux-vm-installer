@@ -1,6 +1,6 @@
 # Implementation Roadmap
 
-**Current state (2026-10-22):** an experimental offline planner, tested reusable safety helpers, Ubuntu Server artifact/NoCloud preparation, and mock-only orchestration with an in-memory fresh-zvol image-import model. PR #11 records the non-sparse mock-zvol policy plus Beta.2 conversion and CDROM ownership constraints; it does not add a live writer. No Linux VM has been created by this repository.
+**Current state (2026-10-22):** an experimental offline planner, tested reusable safety helpers, Ubuntu Server artifact/NoCloud preparation, and mock-only orchestration. PR #11 now includes a simulated seed-ISO ownership transfer/reconciliation case plus pure path planning from an exact child-dataset query row, alongside the non-sparse zvol and Beta.2 conversion constraints. It still adds no live writer. No Linux VM has been created by this repository.
 
 **GitHub status verified 2026-10-22:** `main` remains at `97dbe36ec5751f83e3902935e619fbe01274ece1`. PR #10 (`fix/midclt-bool-output`) is open/draft; PR #11 (`feat/import-path-and-thick-zvol`) is open/draft and stacked on PR #10. The reviewed heads had passing planner checks; always verify the exact latest head before merge. Neither PR is merged; checks do not establish live TrueNAS behavior.
 
