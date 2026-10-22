@@ -337,6 +337,7 @@ class UbuntuServerProfileTests(unittest.TestCase):
             download.assert_called_once_with(root / "cache")
             self.assertEqual(result, output)
             self.assertEqual(output.read_bytes(), b"raw-data")
+            self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
             self.assertEqual(len(calls), 3)
             self.assertTrue(all(isinstance(call, list) for call in calls))
             self.assertEqual(calls[1][1:4], ["convert", "-n", "-f"])

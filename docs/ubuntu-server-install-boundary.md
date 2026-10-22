@@ -69,11 +69,18 @@ The official middleware source at the same tag/commit, `src/middlewared/middlewa
 
 Consequently, creating a CDROM device can change the seed ISO's owner even when the VM-device request is the only visible API call. A future installer must disclose and record this possible ownership transfer in its plan/manifest, keep the seed inside the run-owned child dataset with restrictive file permissions, and re-read the exact owner after the call. Do not use world-readable permissions as a workaround. Reconcile ownership and device state before any retry or cleanup after an ambiguous response. This is exact-build source review only; it does not prove the host filesystem permissions or libvirt access behavior on the target machine.
 
+### Artifact access paths are distinct
+
+- Image conversion: the reviewed Beta.2 `vm.device.convert` middleware job invokes `qemu-img` to read the staged image and write the existing zvol. This is not the `libvirt-qemu` process opening the source image. The operator probe measured only `libvirt-qemu` access; it did not establish the conversion subprocess's effective identity, path visibility, or read success. Keep the staged image private; confirm the middleware-side access path during a separately authorized disposable conversion test before enabling a live writer.
+- NoCloud CDROM: the reviewed CDROM delegate may transfer the ISO owner to the libvirt UID/GID and then re-check access. A root-owned mode-0600 ISO is not readable by `libvirt-qemu` before that handoff, as the probe demonstrated. Do not broaden it to world-readable. A future live installer must read back the exact post-call owner and verify effective libvirt readability before proceeding; the mock ownership transition is not that verification.
+
+These source-level distinctions prevent the permission probe from being overgeneralized: it demonstrates a real pre-handoff restriction, not that every artifact consumer needs the same permission change.
+
 ## Operator-provided disposable staging permission probe
 
 On 2026-10-22, the operator ran a separately authorized probe on `TrueNAS-26.0.0-BETA.2` using a newly created disposable child filesystem dataset, not the installer. Root created a 17-byte file with owner `0:0` and mode `0600` in the dataset's middleware-reported mountpoint. Running checks as `libvirt-qemu` showed directory traversal/list access, no directory write access, and no read access to that file. The operator removed the file, confirmed the directory empty, deleted the exact dataset with `recursive: false` and `force: false`, and queried the exact dataset ID afterward; deletion returned `true` and the query returned an empty list.
 
-This is operator-provided evidence for root file creation and effective access to one disposable child-dataset path only. It does not establish that `vm.device.convert` runs as `libvirt-qemu`, validate the CDROM delegate's ownership change, prove the staged ISO is readable after attachment, or validate any installer code. No image, zvol, VM, or device was created, and no conversion or boot was attempted.
+This is operator-provided evidence for root file creation and effective access to one disposable child-dataset path only. It does not establish conversion subprocess identity/path access, validate the CDROM delegate's ownership change, prove the staged ISO is readable after attachment, or validate any installer code. No image, zvol, VM, or device was created, and no conversion or boot was attempted.
 
 ## Preflight and conflicts
 
