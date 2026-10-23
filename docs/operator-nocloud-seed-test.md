@@ -16,7 +16,7 @@ No trusted transfer path from the workstation into the VM's child dataset has be
 
 - Keep the VM stopped while attaching seed media. Use the TrueNAS **Stop** action and confirm `STOPPED`; do not use **Power Off** to force it down. If graceful stop fails, stop and investigate.
 - Keep the VM's device set limited to its existing loopback-only SPICE display and VirtIO disk plus this one CDROM. Do not add a NIC.
-- The seed creates only a disposable, non-sudo account named `vmtest` plus eight random hexadecimal characters. Use a unique, high-entropy one-time password; never reuse a production password or send it in chat. The seed contains a password **hash**, which is still sensitive. Keep the ISO private and do not publish it or include it in Git.
+- The seed requests one disposable account named `vmtest` plus eight random hexadecimal characters, with no sudo rule. It does not request cloud-init's distro-default user, but this VM has already booted once, so an existing default account may remain; do not treat this test account as an isolation boundary. Use a unique, high-entropy one-time password; never reuse a production password or send it in chat. The seed contains a password **hash**, which is still sensitive. Keep the ISO private and do not publish it or include it in Git.
 - The TrueNAS SPICE/display password controls access to the viewer. It is not the Ubuntu guest password. Do not put the SPICE password in NoCloud data.
 - TrueNAS' CDROM delegate may change the ISO owner to the libvirt service user. Read back owner and mode after attachment. Never work around access errors with `chmod 777`, broad ACLs, or blind retries.
 - Every live write below is a separate operator action. This document has not been live-runtime tested. Stop on any mismatch or ambiguous response; query exact state before considering a retry.
@@ -100,11 +100,11 @@ user_data = {
     "disable_root": True,
     "ssh_pwauth": False,
     "users": [
-        "default",
         {
             "name": username,
             "shell": "/bin/bash",
             "lock_passwd": False,
+            "sudo": None,
             "passwd": password_hash,
         },
     ],
