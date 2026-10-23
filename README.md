@@ -67,7 +67,7 @@ tests and limitations. Preview success does not establish live compatibility.
 
 ## Operator test runbooks
 
-The [console-only test disk-attach runbook](docs/operator-console-test-disk-attach.md) is a guarded, manual TrueNAS Shell step for an already-created disposable VM and zvol. It is not installer functionality; it does not start the VM, attach a NIC, provision the guest, or perform cleanup.
+The [console-only test VM runbook](docs/operator-console-test-disk-attach.md) contains separate guarded TrueNAS Shell steps to attach the disposable zvol and request a no-overcommit VM start. It is not installer functionality; it adds no NIC and does not provision the guest or perform cleanup.
 
 ## Development
 
