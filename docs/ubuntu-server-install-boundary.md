@@ -82,6 +82,18 @@ On 2026-10-22, the operator ran a separately authorized probe on `TrueNAS-26.0.0
 
 This is operator-provided evidence for root file creation and effective access to one disposable child-dataset path only. It does not establish conversion subprocess identity/path access, validate the CDROM delegate's ownership change, prove the staged ISO is readable after attachment, or validate any installer code. No image, zvol, VM, or device was created, and no conversion or boot was attempted.
 
+## Operator-provided disposable conversion probe
+
+On 2026-10-23, a separately authorized operator-run test on `TrueNAS-26.0.0-BETA.2` placed a 1 MiB synthetic raw image in a fresh disposable filesystem dataset and converted it into a fresh 16 MiB non-sparse zvol. Read-only middleware job history showed two `vm.device.convert` jobs, both `SUCCESS` with result `true` and no reported error. The operator compared the first 1 MiB of the zvol with the source; `cmp` exited 0. No VM or device was created. The test zvol and source dataset were deleted using exact IDs, non-recursively and without force; the source file was removed first. Independent read-only queries confirmed the dataset, zvol, and device reference were absent.
+
+This is live evidence that the Beta.2 conversion method accepted this small synthetic raw-file request and transferred its bytes to the disposable zvol. It does not validate the installer, its pinned Ubuntu artifact, conversion of the full-size image, seed/CDROM access, VM configuration, guest provisioning, boot, or installer cleanup automation. Two successful jobs were observed; why the conversion call ran twice is unknown. The profile allowlist remains empty.
+
+## Operator-provided console-only Ubuntu Server boot test
+
+On 2026-10-23, a separately authorized manual test on `TrueNAS-26.0.0-BETA.2` used the pinned Ubuntu Server 26.04.1 LTS cloud image converted to a fresh 16 GiB non-sparse zvol. The VM had 2 vCPUs, 4096 MiB RAM, UEFI, Secure Boot disabled, autostart disabled, one VirtIO disk, and a loopback-bound SPICE display. No NIC or seed/CDROM device was attached. The operator started it with overcommit disabled; middleware read-back reported `RUNNING`, and an operator-provided console screenshot showed Ubuntu at the `ubuntu login:` prompt on `tty1`.
+
+This confirms only that this manually configured guest reached its console login prompt. No guest login or first-boot provisioning was performed; network behavior, seed/CDROM access, installer automation, and automated cleanup remain untested. The test left its disposable VM resources in place. No guest password was configured or entered. All profiles remain experimental and the live profile allowlist remains empty.
+
 ## Preflight and conflicts
 
 ### Read-only preflight prototype
