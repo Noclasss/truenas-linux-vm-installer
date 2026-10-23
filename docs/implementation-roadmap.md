@@ -32,6 +32,16 @@
 
 ## Next work, in order
 
+**Offline helper repair (2026-10-23):** fixed the standalone `ubuntu_server`
+import path, which omitted `ensure_trusted_directory_chain` and caused both
+raw-image staging and seed generation to fail with `NameError` when imported
+from the planning directory. Two regression tests exercise that import mode
+through complete mocked artifact builds, including private output permissions
+and temporary-file cleanup. Both tests reproduce the failure before the fix;
+all 154 offline tests pass after it. No downloads, external image tools, or
+TrueNAS operations were run for this repair. The live validation gates below
+remain open.
+
 ### 1. Offline image staging and conversion — implemented
 
 `planning/ubuntu_server.py` exposes `stage_ubuntu_server_raw_image(cache_dir, output_path)`. The helper explicitly downloads through the shared exact-size/SHA-256 verifier, inspects the source with bounded `qemu-img info`, rejects unexpected QCOW2 format, virtual size, backing file, or dirty flag, and converts to raw only after those checks. It validates converted format/virtual size, requires a lowercase `.raw` suffix for the Beta.2 converter, refuses pre-existing outputs (including races during publication), uses no shell, and removes its temporary output on failure. It is local artifact preparation only: no TrueNAS import/zvol path exists. It requires `qemu-img`; it does not install tools. All profiles remain experimental.

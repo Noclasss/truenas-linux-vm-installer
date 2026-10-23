@@ -24,7 +24,7 @@ if __package__:
     from .installer_core.safe_filesystem import FilesystemSafetyError, ensure_trusted_directory_chain, write_private_new_file
 else:
     from installer_core.artifacts import ArtifactError, download_and_verify, ensure_private_cache_dir
-    from installer_core.safe_filesystem import FilesystemSafetyError, write_private_new_file
+    from installer_core.safe_filesystem import FilesystemSafetyError, ensure_trusted_directory_chain, write_private_new_file
 
 PROFILE_ID = "ubuntu-server"
 PROFILE_STATUS = "experimental"
