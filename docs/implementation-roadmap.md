@@ -68,7 +68,7 @@ Keep `LIVE_PROFILE_ALLOWLIST` empty. The offline contract in `docs/ubuntu-server
 
 ### 4. Validate Ubuntu Server in a disposable environment — console boot to login prompt demonstrated
 
-The separately authorized manual test confirmed image conversion and boot to the Ubuntu console login prompt; it did not invoke installer code. The next validation gate is seed/CDROM access and NoCloud first-boot provisioning on a disposable target. Guest login, networking, and installer automation remain untested; obtain explicit scope approval before additional live changes.
+The separately authorized manual test confirmed image conversion and boot to the Ubuntu console login prompt; it did not invoke installer code. The next manual validation gate is a NoCloud seed/CDROM pickup and console-login attempt, described in [`docs/operator-nocloud-seed-test.md`](operator-nocloud-seed-test.md). It targets the already-booted disposable guest, so it cannot establish pristine first-boot behavior; that requires a fresh disk/VM. The runbook was prepared only: no seed was created, transferred, or attached, and no VM was stopped or restarted. The read-only host check found `cloud-localds` and `genisoimage` absent, and no trusted transfer path was verified. Guest login, seed provisioning, networking, and installer automation remain untested; any live change requires separate authorization.
 
 **Done when:** the exact TrueNAS build, resource settings, test result, and limitations are documented, and any failure leaves existing host resources untouched. First-boot and login validation remain open.
 

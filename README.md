@@ -71,7 +71,7 @@ tests and limitations. Preview success does not establish live compatibility.
 
 ## Operator test runbooks
 
-The [console-only test VM runbook](docs/operator-console-test-disk-attach.md) contains separate guarded TrueNAS Shell steps to attach the disposable zvol and request a no-overcommit VM start. It is not installer functionality; it adds no NIC and does not provision the guest or perform cleanup. The result is documented in [operator console boot evidence](docs/operator-console-boot-evidence.md).
+The [console-only test VM runbook](docs/operator-console-test-disk-attach.md) contains separate guarded TrueNAS Shell steps to attach the disposable zvol and request a no-overcommit VM start. The [NoCloud seed and console-login runbook](docs/operator-nocloud-seed-test.md) is documentation only: it requires a trusted pre-existing transfer route, leaves the VM without a NIC, and tests seed pickup on an already-booted guest—not pristine first boot. No seed was created, transferred, or attached. Neither runbook is installer functionality or evidence of guest provisioning. The console boot result is documented in [operator console boot evidence](docs/operator-console-boot-evidence.md).
 
 ## Development
 
