@@ -88,6 +88,12 @@ On 2026-10-23, a separately authorized operator-run test on `TrueNAS-26.0.0-BETA
 
 This is live evidence that the Beta.2 conversion method accepted this small synthetic raw-file request and transferred its bytes to the disposable zvol. It does not validate the installer, its pinned Ubuntu artifact, conversion of the full-size image, seed/CDROM access, VM configuration, guest provisioning, boot, or installer cleanup automation. Two successful jobs were observed; why the conversion call ran twice is unknown. The profile allowlist remains empty.
 
+## Operator-provided console-only Ubuntu Server boot test
+
+On 2026-10-23, a separately authorized manual test on `TrueNAS-26.0.0-BETA.2` used the pinned Ubuntu Server 26.04.1 LTS cloud image converted to a fresh 16 GiB non-sparse zvol. The VM had 2 vCPUs, 4096 MiB RAM, UEFI, Secure Boot disabled, autostart disabled, one VirtIO disk, and a loopback-bound SPICE display. No NIC or seed/CDROM device was attached. The operator started it with overcommit disabled; middleware read-back reported `RUNNING`, and an operator-provided console screenshot showed Ubuntu at the `ubuntu login:` prompt on `tty1`.
+
+This confirms only that this manually configured guest reached its console login prompt. No guest login or first-boot provisioning was performed; network behavior, seed/CDROM access, installer automation, and automated cleanup remain untested. The test left its disposable VM resources in place. No guest password was configured or entered. All profiles remain experimental and the live profile allowlist remains empty.
+
 ## Preflight and conflicts
 
 ### Read-only preflight prototype
