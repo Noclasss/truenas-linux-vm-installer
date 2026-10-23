@@ -12,6 +12,8 @@ The TrueNAS host was checked read-only on 2026-10-23: `cloud-localds` and `genis
 
 No trusted transfer path from the workstation into the VM's child dataset has been verified. Use only an already-approved file-transfer path. If none is available, stop here—do not enable SSH/SMB, change ACLs, weaken permissions, or use a network share just for this test. The mountpoint returned by TrueNAS and the path-prefix checks below are necessary identity checks, not proof that the dataset is mounted, visible to every service, or effectively accessible. The post-attach `runuser` check verifies read access for `libvirt-qemu` only; it does not prove middleware conversion access, cloud-init behavior, or guest provisioning.
 
+For every TrueNAS write, run its read-only preflight block by itself, inspect its exact output, and only then run the separate mutation block. Do not paste multiple blocks together. Mutation blocks repeat the critical target checks immediately before making exactly one write.
+
 ## Safety rules
 
 - Keep the VM stopped while attaching seed media. Use the TrueNAS **Stop** action and confirm `STOPPED`; do not use **Power Off** to force it down. If graceful stop fails, stop and investigate.
@@ -184,9 +186,9 @@ If an approved transfer path does not preserve or permit verification of the fil
 
 ## 3. Attach the ISO to the stopped VM
 
-Only after the transfer precondition is satisfied, gracefully stop the VM in TrueNAS and confirm it is `STOPPED`. Paste this block into an authenticated TrueNAS Shell. It rechecks the exact build, VM identity/configuration, pool health, child dataset and ISO path, existing device set, and path conflicts. It creates one CDROM, reads it back, then checks effective readability as `libvirt-qemu`. It never prints the SPICE password or any seed contents.
+### 3a. Read-only preflight
 
-If the tool call or read-back is ambiguous, do not repeat the create call. Query exact device/path state and stop for manual review. If post-attach readability fails, leave the VM stopped; do not chmod or automatically detach.
+First run this **read-only preflight** block by itself, after the VM has been gracefully stopped and read back as `STOPPED`. It checks the exact build, VM identity/configuration, pool health, child dataset and ISO path, existing device set, and path conflicts. It never creates a device. Review the printed `ready to attach` result before using Step 3b; stop on any mismatch or ambiguous response.
 
 ```sh
 sudo -v
@@ -292,38 +294,124 @@ if hashlib.sha256(seed_path.read_bytes()).hexdigest() != expected_sha256:
 if call("vm.device.query", [["attributes.path", "=", str(seed_path)]]):
     raise SystemExit("STOP: ISO path is already referenced by a VM device")
 
-call("vm.device.create", {
-    "vm": vm_id,
-    "attributes": {"dtype": "CDROM", "path": str(seed_path)},
-})
+print(json.dumps({
+    "status": "ready to attach",
+    "vm_id": vm_id,
+    "vm_state": "STOPPED",
+    "device_count": len(devices),
+    "nic_attached": False,
+    "iso_path": str(seed_path),
+    "iso_sha256": expected_sha256,
+}, separators=(",", ":")))
+PY
+```
 
+### 3b. Attach one CDROM
+
+Proceed only after inspecting a successful preflight result. Run the following **separate mutation block** once; it rechecks the stopped VM, exact device set, mounted child dataset, ISO mode/hash, pool health, and path-reference absence before creating one CDROM. It then reads back the device and effective `libvirt-qemu` access. Never paste this together with the read-only block. If the call is ambiguous or the read-back fails, query exact state; do not retry or start the VM.
+
+```sh
+sudo -v
+sudo python3 - <<'PY'
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+from pathlib import Path
+
+
+def call(method, *args):
+    command = ["midclt", "call", method]
+    command.extend(json.dumps(arg, separators=(",", ":")) for arg in args)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    if result.returncode:
+        raise SystemExit(f"STOP: {method} failed; inspect exact state before retrying")
+    text = result.stdout.strip()
+    if method == "system.version" and re.fullmatch(r"TrueNAS-[A-Za-z0-9._-]+", text):
+        return text
+    return json.loads(text)
+
+
+if os.geteuid() != 0:
+    raise SystemExit("STOP: run this block with sudo")
+pool_name = input("Disposable test pool: ").strip()
+vm_name = input("Disposable test VM name: ").strip()
+try:
+    vm_id = int(input("Disposable test VM numeric ID: ").strip())
+except ValueError:
+    raise SystemExit("STOP: VM ID must be an integer")
+seed_input = input("Transferred seed ISO full path: ").strip()
+expected_sha256 = input("SHA-256 printed by the workstation builder: ").strip()
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", pool_name) or not re.fullmatch(r"[A-Za-z0-9]+", vm_name) or vm_id < 1:
+    raise SystemExit("STOP: invalid pool, VM, or ID")
+if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+    raise SystemExit("STOP: expected SHA-256 must be 64 lowercase hexadecimal characters")
+if call("system.version") != "TrueNAS-26.0.0-BETA.2":
+    raise SystemExit("STOP: unsupported TrueNAS build")
+vm = call("vm.query", [["id", "=", vm_id], ["name", "=", vm_name]], {"select": ["id", "name", "status", "vcpus", "memory", "autostart"]})
+if len(vm) != 1 or vm[0].get("status", {}).get("state") != "STOPPED" or vm[0].get("vcpus") != 2 or vm[0].get("memory") != 4096 or vm[0].get("autostart") is not False:
+    raise SystemExit("STOP: expected stopped disposable 2-vCPU/4096-MiB VM not found")
+devices = call("vm.device.query", [["vm", "=", vm_id]])
+displays = [d for d in devices if d.get("attributes", {}).get("dtype") == "DISPLAY"]
+disks = [d for d in devices if d.get("attributes", {}).get("dtype") == "DISK"]
+if len(devices) != 2 or len(displays) != 1 or len(disks) != 1:
+    raise SystemExit("STOP: expected only the existing display and disk; no NIC/CDROM")
+da = displays[0].get("attributes", {})
+if da.get("type") != "SPICE" or da.get("bind") != "127.0.0.1":
+    raise SystemExit("STOP: display is not loopback-only SPICE")
+expected_disk = f"/dev/zvol/{pool_name}/linux-vms/{vm_name}/disk0"
+if disks[0].get("attributes", {}).get("path") != expected_disk:
+    raise SystemExit("STOP: disk does not match the expected test zvol")
+pool = call("pool.query", [["name", "=", pool_name]], {"select": ["status", "healthy", "warning"]})
+if len(pool) != 1 or pool[0].get("status") != "ONLINE" or pool[0].get("healthy") is not True or pool[0].get("warning") is not False:
+    raise SystemExit("STOP: pool health check failed")
+rows = call("pool.dataset.query", [["id", "=", f"{pool_name}/linux-vms/{vm_name}"]], {"select": ["id", "type", "mountpoint"]})
+if len(rows) != 1 or rows[0].get("type") != "FILESYSTEM":
+    raise SystemExit("STOP: exact per-VM filesystem dataset not found")
+mountpoint = rows[0].get("mountpoint")
+if isinstance(mountpoint, dict):
+    mountpoint = mountpoint.get("value") or mountpoint.get("parsed") or mountpoint.get("rawvalue")
+if not isinstance(mountpoint, str) or not mountpoint.startswith(f"/mnt/{pool_name}/"):
+    raise SystemExit("STOP: dataset mountpoint is outside selected pool")
+mount = Path(mountpoint).resolve(strict=True)
+if not os.path.ismount(mount):
+    raise SystemExit("STOP: exact child dataset is not mounted")
+seed_candidate = Path(seed_input)
+if not stat.S_ISREG(seed_candidate.lstat().st_mode):
+    raise SystemExit("STOP: seed path must be a regular file, not a symlink")
+seed_path = seed_candidate.resolve(strict=True)
+if seed_path.parent != mount or not re.fullmatch(r"nocloud-seed-[0-9a-f]{32}\.iso", seed_path.name):
+    raise SystemExit("STOP: seed ISO is outside the expected child dataset")
+info = seed_path.lstat()
+if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size <= 0:
+    raise SystemExit("STOP: seed ISO must be nonempty, regular, and mode 0600")
+if hashlib.sha256(seed_path.read_bytes()).hexdigest() != expected_sha256:
+    raise SystemExit("STOP: seed ISO SHA-256 mismatch")
+if call("vm.device.query", [["attributes.path", "=", str(seed_path)]]):
+    raise SystemExit("STOP: seed path is already referenced by a VM device")
+call("vm.device.create", {"vm": vm_id, "attributes": {"dtype": "CDROM", "path": str(seed_path)}})
 readback = call("vm.device.query", [["vm", "=", vm_id]])
 cdroms = [d for d in readback if d.get("attributes", {}).get("dtype") == "CDROM" and d.get("attributes", {}).get("path") == str(seed_path)]
 vm_after = call("vm.query", [["id", "=", vm_id], ["name", "=", vm_name]], {"select": ["id", "name", "status"]})
-if len(readback) != 3 or len(cdroms) != 1 or len(vm_after) != 1 or vm_after[0].get("status", {}).get("state") != "STOPPED":
-    raise SystemExit("STOP: attachment read-back is unexpected; do not retry")
-if any(d.get("attributes", {}).get("dtype") == "NIC" for d in readback):
-    raise SystemExit("STOP: NIC unexpectedly present; leave VM stopped")
+if len(readback) != 3 or len(cdroms) != 1 or len(vm_after) != 1 or vm_after[0].get("status", {}).get("state") != "STOPPED" or any(d.get("attributes", {}).get("dtype") == "NIC" for d in readback):
+    raise SystemExit("STOP: attachment read-back unexpected; do not retry")
 access = subprocess.run(["runuser", "-u", "libvirt-qemu", "--", "test", "-r", str(seed_path)], capture_output=True, timeout=30)
 if access.returncode != 0:
-    raise SystemExit("STOP: libvirt-qemu cannot read the seed ISO; do not chmod/retry/start; inspect exact owner and device state")
+    raise SystemExit("STOP: libvirt-qemu cannot read the ISO; leave VM stopped and do not chmod/retry")
 owner = seed_path.stat()
-print(json.dumps({
-    "status": "CDROM attachment verified",
-    "cdrom_device_id": cdroms[0].get("id"),
-    "vm_state": "STOPPED",
-    "device_count": len(readback),
-    "nic_attached": False,
-    "iso_owner_uid": owner.st_uid,
-    "iso_owner_gid": owner.st_gid,
-    "iso_mode_octal": oct(stat.S_IMODE(owner.st_mode)),
-}, separators=(",", ":")))
+if stat.S_IMODE(owner.st_mode) != 0o600:
+    raise SystemExit("STOP: seed ISO mode changed after attachment; leave VM stopped and do not start")
+print(json.dumps({"status": "CDROM attachment verified", "cdrom_device_id": cdroms[0].get("id"), "vm_state": "STOPPED", "device_count": len(readback), "nic_attached": False, "iso_owner_uid": owner.st_uid, "iso_owner_gid": owner.st_gid, "iso_mode_octal": oct(stat.S_IMODE(owner.st_mode))}, separators=(",", ":")))
 PY
 ```
 
 ## 4. Start with no memory overcommit
 
-Proceed only if Step 3 reported `CDROM attachment verified`. Keep the VM stopped until this separate check passes. This block verifies the loopback display, exact VirtIO disk and CDROM, no NIC, pool health, virtualization, and the same memory reserve used by the earlier console test. It prints no display password or seed content.
+### 4a. Read-only start preflight
+
+Proceed only if Step 3b reported `CDROM attachment verified`. Run this readiness check by itself and review its result. It verifies the loopback display, exact VirtIO disk and CDROM, no NIC, pool health, virtualization, and memory reserve. It does not start the VM and prints no display password or seed content.
 
 ```sh
 sudo -v
@@ -377,7 +465,20 @@ if len(vm) != 1 or vm[0].get("status", {}).get("state") != "STOPPED" or vm[0].ge
     raise SystemExit("STOP: VM is not the expected stopped disposable test VM")
 if call("vm.supports_virtualization") is not True:
     raise SystemExit("STOP: virtualization unavailable")
+rows = call("pool.dataset.query", [["id", "=", f"{pool_name}/linux-vms/{vm_name}"]], {"select": ["id", "type", "mountpoint"]})
+if len(rows) != 1 or rows[0].get("type") != "FILESYSTEM":
+    raise SystemExit("STOP: exact per-VM filesystem dataset not found")
+mountpoint = rows[0].get("mountpoint")
+if isinstance(mountpoint, dict):
+    mountpoint = mountpoint.get("value") or mountpoint.get("parsed") or mountpoint.get("rawvalue")
+if not isinstance(mountpoint, str) or not mountpoint.startswith(f"/mnt/{pool_name}/"):
+    raise SystemExit("STOP: dataset mountpoint is outside selected pool")
+mount = Path(mountpoint).resolve(strict=True)
+if not os.path.ismount(mount):
+    raise SystemExit("STOP: exact child dataset is not mounted")
 seed_file = Path(seed_path)
+if seed_file.resolve(strict=True).parent != mount:
+    raise SystemExit("STOP: seed is not directly inside the mounted child dataset")
 seed_info = seed_file.lstat()
 if not stat.S_ISREG(seed_info.st_mode) or stat.S_IMODE(seed_info.st_mode) != 0o600 or seed_info.st_size <= 0:
     raise SystemExit("STOP: seed ISO is not a nonempty regular mode-0600 file")
@@ -419,21 +520,116 @@ available = call("vm.get_available_memory", False)
 if not isinstance(available, int) or available < 20 * 1024**3:
     raise SystemExit("STOP: available memory is below the 4-GiB VM plus 16-GiB host reserve")
 
-result = call("vm.start", vm_id, {"overcommit": False})
-if result is not None:
+print(json.dumps({"status": "ready to start", "vm_id": vm_id, "vm_state": "STOPPED", "device_count": len(devices), "nic_attached": False, "available_memory_bytes": available, "seed_sha256": expected_sha256}, separators=(",", ":")))
+PY
+```
+
+### 4b. Start the VM (one write)
+
+After reviewing a successful Step 4a result, run this **separate mutation block** once. It repeats the critical stopped-state, device, seed, pool, zvol, virtualization, and memory checks immediately before calling `vm.start`; it never enables overcommit. Do not paste it with Step 4a. On an ambiguous response, query state; never retry `vm.start` blindly.
+
+```sh
+sudo -v
+sudo python3 - <<'PY'
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+from pathlib import Path
+
+
+def call(method, *args):
+    command = ["midclt", "call", method]
+    command.extend(json.dumps(arg, separators=(",", ":")) for arg in args)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    if result.returncode:
+        raise SystemExit(f"STOP: {method} failed; inspect exact state before retrying")
+    text = result.stdout.strip()
+    if method == "system.version" and re.fullmatch(r"TrueNAS-[A-Za-z0-9._-]+", text):
+        return text
+    if method == "vm.supports_virtualization" and text in ("True", "False"):
+        return text == "True"
+    return json.loads(text)
+
+
+if os.geteuid() != 0:
+    raise SystemExit("STOP: run this block with sudo")
+pool_name = input("Disposable test pool: ").strip()
+vm_name = input("Disposable test VM name: ").strip()
+try:
+    vm_id = int(input("Disposable test VM numeric ID: ").strip())
+except ValueError:
+    raise SystemExit("STOP: VM ID must be an integer")
+seed_path = input("Exact attached seed ISO path: ").strip()
+expected_sha256 = input("SHA-256 printed by the workstation builder: ").strip()
+seed_pattern = rf"/mnt/{re.escape(pool_name)}/linux-vms/{re.escape(vm_name)}/nocloud-seed-[0-9a-f]{{32}}\.iso"
+if not re.fullmatch(seed_pattern, seed_path):
+    raise SystemExit("STOP: seed path is not the expected ISO beneath this test VM's child dataset")
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", pool_name) or not re.fullmatch(r"[A-Za-z0-9]+", vm_name) or vm_id < 1:
+    raise SystemExit("STOP: invalid pool, VM, or ID")
+if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+    raise SystemExit("STOP: expected SHA-256 must be 64 lowercase hexadecimal characters")
+if call("system.version") != "TrueNAS-26.0.0-BETA.2":
+    raise SystemExit("STOP: unsupported TrueNAS build")
+vm = call("vm.query", [["id", "=", vm_id], ["name", "=", vm_name]], {"select": ["id", "name", "status", "vcpus", "memory", "autostart"]})
+if len(vm) != 1 or vm[0].get("status", {}).get("state") != "STOPPED" or vm[0].get("vcpus") != 2 or vm[0].get("memory") != 4096 or vm[0].get("autostart") is not False:
+    raise SystemExit("STOP: expected stopped disposable VM not found")
+if call("vm.supports_virtualization") is not True:
+    raise SystemExit("STOP: virtualization unavailable")
+devices = call("vm.device.query", [["vm", "=", vm_id]])
+displays = [d for d in devices if d.get("attributes", {}).get("dtype") == "DISPLAY"]
+disks = [d for d in devices if d.get("attributes", {}).get("dtype") == "DISK"]
+cdroms = [d for d in devices if d.get("attributes", {}).get("dtype") == "CDROM"]
+if len(devices) != 3 or len(displays) != 1 or len(disks) != 1 or len(cdroms) != 1 or any(d.get("attributes", {}).get("dtype") == "NIC" for d in devices):
+    raise SystemExit("STOP: expected one display, disk, and CDROM with no NIC")
+if displays[0].get("attributes", {}).get("type") != "SPICE" or displays[0].get("attributes", {}).get("bind") != "127.0.0.1":
+    raise SystemExit("STOP: display is not loopback-only SPICE")
+disk_path = f"/dev/zvol/{pool_name}/linux-vms/{vm_name}/disk0"
+if disks[0].get("attributes", {}).get("path") != disk_path or disks[0].get("attributes", {}).get("type") != "VIRTIO":
+    raise SystemExit("STOP: unexpected test disk")
+if cdroms[0].get("attributes", {}).get("path") != seed_path:
+    raise SystemExit("STOP: CDROM path differs from exact seed path")
+for path, expected_id in ((disk_path, disks[0].get("id")), (seed_path, cdroms[0].get("id"))):
+    refs = call("vm.device.query", [["attributes.path", "=", path]])
+    if len(refs) != 1 or refs[0].get("vm") != vm_id or refs[0].get("id") != expected_id:
+        raise SystemExit("STOP: device path reference is ambiguous")
+pool = call("pool.query", [["name", "=", pool_name]], {"select": ["status", "healthy", "warning"]})
+if len(pool) != 1 or pool[0].get("status") != "ONLINE" or pool[0].get("healthy") is not True or pool[0].get("warning") is not False:
+    raise SystemExit("STOP: pool health check failed")
+zvol = call("pool.dataset.query", [["id", "=", f"{pool_name}/linux-vms/{vm_name}/disk0"]], {"select": ["id", "type", "volsize", "refreservation"]})
+if len(zvol) != 1 or zvol[0].get("type") != "VOLUME" or zvol[0].get("volsize", {}).get("parsed") != 16 * 1024**3 or zvol[0].get("refreservation", {}).get("parsed") != 16 * 1024**3:
+    raise SystemExit("STOP: test disk is not the expected thick 16-GiB zvol")
+rows = call("pool.dataset.query", [["id", "=", f"{pool_name}/linux-vms/{vm_name}"]], {"select": ["id", "type", "mountpoint"]})
+if len(rows) != 1 or rows[0].get("type") != "FILESYSTEM":
+    raise SystemExit("STOP: exact per-VM filesystem dataset not found")
+mountpoint = rows[0].get("mountpoint")
+if isinstance(mountpoint, dict):
+    mountpoint = mountpoint.get("value") or mountpoint.get("parsed") or mountpoint.get("rawvalue")
+if not isinstance(mountpoint, str) or not mountpoint.startswith(f"/mnt/{pool_name}/"):
+    raise SystemExit("STOP: dataset mountpoint is outside selected pool")
+mount = Path(mountpoint).resolve(strict=True)
+if not os.path.ismount(mount):
+    raise SystemExit("STOP: exact child dataset is not mounted")
+seed_file = Path(seed_path)
+if seed_file.resolve(strict=True).parent != mount:
+    raise SystemExit("STOP: seed is not directly inside the mounted child dataset")
+info = seed_file.lstat()
+if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size <= 0 or hashlib.sha256(seed_file.read_bytes()).hexdigest() != expected_sha256:
+    raise SystemExit("STOP: seed ISO is not the expected mode-0600 file/hash")
+access = subprocess.run(["runuser", "-u", "libvirt-qemu", "--", "test", "-r", seed_path], capture_output=True, timeout=30)
+if access.returncode != 0:
+    raise SystemExit("STOP: libvirt-qemu cannot read the seed ISO")
+available = call("vm.get_available_memory", False)
+if not isinstance(available, int) or available < 20 * 1024**3:
+    raise SystemExit("STOP: available memory is below the required 20-GiB reserve")
+if call("vm.start", vm_id, {"overcommit": False}) is not None:
     raise SystemExit("STOP: unexpected start response; inspect live state before retrying")
 readback = call("vm.query", [["id", "=", vm_id]], {"select": ["id", "name", "status"]})
-if len(readback) != 1:
-    raise SystemExit("STOP: VM read-back unexpected; do not retry")
-status = readback[0].get("status", {})
-if status.get("state") != "RUNNING":
-    raise SystemExit("STOP: VM did not reach RUNNING; inspect exact state and do not retry")
-print(json.dumps({
-    "start_call_returned": "success",
-    "vm_state": status.get("state"),
-    "domain_state": status.get("domain_state"),
-    "nic_attached": False,
-}, separators=(",", ":")))
+if len(readback) != 1 or readback[0].get("status", {}).get("state") != "RUNNING":
+    raise SystemExit("STOP: VM did not read back RUNNING; inspect state and do not retry")
+print(json.dumps({"status": "VM start verified", "vm_id": vm_id, "vm_state": "RUNNING", "nic_attached": False, "overcommit": False}, separators=(",", ":")))
 PY
 ```
 
@@ -443,7 +639,9 @@ A successful start request is not proof that NoCloud ran. Open the guest console
 
 Record only non-secret evidence: TrueNAS build, VM settings, the `CDROM attachment verified` read-back, start/read-back state, and whether the generated test account reached the guest login. Do not capture or share the password, password hash, full seed ISO, or output containing seed contents.
 
-After the test, use TrueNAS **Stop** and confirm the VM is stopped. This block deletes only the exact CDROM device with all destructive options explicitly false, then reads back both the VM device list and exact ISO-path references. It does not delete the ISO.
+### 5a. Read-only preflight before detaching
+
+After the test, use TrueNAS **Stop** and confirm the VM is stopped. Run this **read-only preflight** block by itself; it checks that the supplied device ID/type/path exactly identify the seed CDROM and that no other VM references the path. Review its `ready to detach` result before Step 5b.
 
 ```sh
 sudo -v
@@ -494,6 +692,62 @@ if len(match) != 1 or match[0].get("attributes", {}).get("dtype") != "CDROM" or 
 refs = call("vm.device.query", [["attributes.path", "=", seed_path]])
 if len(refs) != 1 or refs[0].get("id") != device_id or refs[0].get("vm") != vm_id:
     raise SystemExit("STOP: seed path reference is ambiguous")
+print(json.dumps({"status": "ready to detach", "vm_id": vm_id, "device_id": device_id, "vm_state": "STOPPED", "seed_path": seed_path, "path_references": 1}, separators=(",", ":")))
+PY
+```
+
+### 5b. Detach the exact CDROM (one write)
+
+Only after reviewing Step 5a's output, run this separate mutation block once. It rechecks the stopped VM and exact device/path reference, deletes only that CDROM with destructive options explicitly false, and reads back that the device and path reference are absent. It does not delete the ISO. If the response is ambiguous, query exact state; do not retry the delete.
+
+```sh
+sudo -v
+sudo python3 - <<'PY'
+import json
+import os
+import re
+import subprocess
+
+
+def call(method, *args):
+    command = ["midclt", "call", method]
+    command.extend(json.dumps(arg, separators=(",", ":")) for arg in args)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    if result.returncode:
+        raise SystemExit(f"STOP: {method} failed; query exact state before retrying")
+    text = result.stdout.strip()
+    if method == "system.version" and re.fullmatch(r"TrueNAS-[A-Za-z0-9._-]+", text):
+        return text
+    return json.loads(text)
+
+
+if os.geteuid() != 0:
+    raise SystemExit("STOP: run this block with sudo")
+pool_name = input("Disposable test pool: ").strip()
+vm_name = input("Disposable test VM name: ").strip()
+try:
+    vm_id = int(input("Disposable test VM numeric ID: ").strip())
+    device_id = int(input("Exact CDROM device ID: ").strip())
+except ValueError:
+    raise SystemExit("STOP: VM and device IDs must be integers")
+seed_path = input("Exact attached seed ISO path: ").strip()
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", pool_name) or not re.fullmatch(r"[A-Za-z0-9]+", vm_name) or vm_id < 1 or device_id < 1:
+    raise SystemExit("STOP: invalid pool, VM, or device identifier")
+seed_pattern = rf"/mnt/{re.escape(pool_name)}/linux-vms/{re.escape(vm_name)}/nocloud-seed-[0-9a-f]{{32}}\.iso"
+if not re.fullmatch(seed_pattern, seed_path):
+    raise SystemExit("STOP: seed path is outside the exact test VM child dataset")
+if call("system.version") != "TrueNAS-26.0.0-BETA.2":
+    raise SystemExit("STOP: unsupported TrueNAS build")
+vm = call("vm.query", [["id", "=", vm_id], ["name", "=", vm_name]], {"select": ["id", "name", "status"]})
+if len(vm) != 1 or vm[0].get("status", {}).get("state") != "STOPPED":
+    raise SystemExit("STOP: exact VM is not confirmed stopped")
+devices = call("vm.device.query", [["vm", "=", vm_id]])
+match = [d for d in devices if d.get("id") == device_id]
+if len(match) != 1 or match[0].get("attributes", {}).get("dtype") != "CDROM" or match[0].get("attributes", {}).get("path") != seed_path:
+    raise SystemExit("STOP: device ID/type/path do not match the exact seed CDROM")
+refs = call("vm.device.query", [["attributes.path", "=", seed_path]])
+if len(refs) != 1 or refs[0].get("id") != device_id or refs[0].get("vm") != vm_id:
+    raise SystemExit("STOP: seed path reference is ambiguous")
 if call("vm.device.delete", device_id, {"force": False, "raw_file": False, "zvol": False}) is not True:
     raise SystemExit("STOP: delete did not return true; query exact state before retrying")
 after_vm = call("vm.device.query", [["vm", "=", vm_id]])
@@ -504,7 +758,9 @@ print(json.dumps({"status": "seed CDROM detached", "device_id": device_id, "vm_s
 PY
 ```
 
-Only after that block reports `seed CDROM detached`, this separate block may unlink the exact ISO. It rechecks the exact dataset row, mountpoint, regular-file status, and absence of any VM device reference. It never removes directories or other files.
+### 5c. Read-only preflight before removing the ISO
+
+Only after Step 5b reports `seed CDROM detached`, run this file-removal preflight by itself. Review the `ready to remove` result before Step 5d; it does not unlink anything.
 
 ```sh
 sudo -v
@@ -533,10 +789,13 @@ def call(method, *args):
 pool_name = input("Disposable test pool: ").strip()
 vm_name = input("Disposable test VM name: ").strip()
 seed_input = input("Exact detached seed ISO path: ").strip()
+expected_sha256 = input("SHA-256 printed by the workstation builder: ").strip()
 if os.geteuid() != 0:
     raise SystemExit("STOP: run this block with sudo")
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", pool_name) or not re.fullmatch(r"[A-Za-z0-9]+", vm_name):
     raise SystemExit("STOP: invalid pool or VM name")
+if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+    raise SystemExit("STOP: expected SHA-256 must be 64 lowercase hexadecimal characters")
 seed_pattern = rf"/mnt/{re.escape(pool_name)}/linux-vms/{re.escape(vm_name)}/nocloud-seed-[0-9a-f]{{32}}\.iso"
 if not re.fullmatch(seed_pattern, seed_input):
     raise SystemExit("STOP: path is outside the exact test VM child dataset")
@@ -556,11 +815,89 @@ if not os.path.ismount(mount):
     raise SystemExit("STOP: exact child dataset mountpoint is not mounted")
 candidate = Path(seed_input)
 info = candidate.lstat()
+if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
+    raise SystemExit("STOP: seed ISO must be a regular mode-0600 file")
+seed_path = candidate.resolve(strict=True)
+if seed_path.parent != mount:
+    raise SystemExit("STOP: seed file is not directly inside the exact child dataset")
+if hashlib.sha256(seed_path.read_bytes()).hexdigest() != expected_sha256:
+    raise SystemExit("STOP: ISO SHA-256 does not match the workstation builder")
+vm_rows = call("vm.query", [["name", "=", vm_name]], {"select": ["id", "name", "status"]})
+if len(vm_rows) != 1 or vm_rows[0].get("status", {}).get("state") != "STOPPED":
+    raise SystemExit("STOP: exact VM is not confirmed stopped")
+if call("vm.device.query", [["attributes.path", "=", str(seed_path)]]):
+    raise SystemExit("STOP: a VM device still references this ISO")
+print(json.dumps({"status": "ready to remove", "iso_path": str(seed_path), "vm_state": "STOPPED", "path_references": 0}, separators=(",", ":")))
+PY
+```
+
+### 5d. Remove only the exact ISO (one file write)
+
+After reviewing Step 5c's output, run this **separate mutation block** once. It repeats the exact dataset/mountpoint, VM stopped-state, file identity, and device-reference checks before unlinking only that ISO. It never removes directories or other files; if the result is ambiguous, stop and inspect exact state instead of retrying.
+
+```sh
+sudo -v
+sudo python3 - <<'PY'
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+from pathlib import Path
+
+
+def call(method, *args):
+    command = ["midclt", "call", method]
+    command.extend(json.dumps(arg, separators=(",", ":")) for arg in args)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    if result.returncode:
+        raise SystemExit(f"STOP: {method} failed; inspect exact state")
+    text = result.stdout.strip()
+    if method == "system.version" and re.fullmatch(r"TrueNAS-[A-Za-z0-9._-]+", text):
+        return text
+    return json.loads(text)
+
+
+if os.geteuid() != 0:
+    raise SystemExit("STOP: run this block with sudo")
+pool_name = input("Disposable test pool: ").strip()
+vm_name = input("Disposable test VM name: ").strip()
+seed_input = input("Exact detached seed ISO path: ").strip()
+expected_sha256 = input("SHA-256 printed by the workstation builder: ").strip()
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", pool_name) or not re.fullmatch(r"[A-Za-z0-9]+", vm_name):
+    raise SystemExit("STOP: invalid pool or VM name")
+if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+    raise SystemExit("STOP: expected SHA-256 must be 64 lowercase hexadecimal characters")
+seed_pattern = rf"/mnt/{re.escape(pool_name)}/linux-vms/{re.escape(vm_name)}/nocloud-seed-[0-9a-f]{{32}}\.iso"
+if not re.fullmatch(seed_pattern, seed_input):
+    raise SystemExit("STOP: path is outside the exact test VM child dataset")
+if call("system.version") != "TrueNAS-26.0.0-BETA.2":
+    raise SystemExit("STOP: unsupported TrueNAS build")
+dataset_id = f"{pool_name}/linux-vms/{vm_name}"
+rows = call("pool.dataset.query", [["id", "=", dataset_id]], {"select": ["id", "type", "mountpoint"]})
+if len(rows) != 1 or rows[0].get("type") != "FILESYSTEM":
+    raise SystemExit("STOP: exact per-VM filesystem dataset not found")
+mountpoint = rows[0].get("mountpoint")
+if isinstance(mountpoint, dict):
+    mountpoint = mountpoint.get("value") or mountpoint.get("parsed") or mountpoint.get("rawvalue")
+if not isinstance(mountpoint, str) or not mountpoint.startswith(f"/mnt/{pool_name}/"):
+    raise SystemExit("STOP: dataset mountpoint is outside the selected pool")
+mount = Path(mountpoint).resolve(strict=True)
+if not os.path.ismount(mount):
+    raise SystemExit("STOP: exact child dataset mountpoint is not mounted")
+candidate = Path(seed_input)
+info = candidate.lstat()
 if not stat.S_ISREG(info.st_mode):
     raise SystemExit("STOP: seed path must be a regular file, not a symlink")
 seed_path = candidate.resolve(strict=True)
 if seed_path.parent != mount:
-    raise SystemExit("STOP: seed file is not directly inside the exact child dataset")
+    raise SystemExit("STOP: seed is not directly inside the exact child dataset")
+info = seed_path.lstat()
+if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
+    raise SystemExit("STOP: seed ISO is no longer a regular mode-0600 file")
+if hashlib.sha256(seed_path.read_bytes()).hexdigest() != expected_sha256:
+    raise SystemExit("STOP: ISO SHA-256 does not match the workstation builder")
 vm_rows = call("vm.query", [["name", "=", vm_name]], {"select": ["id", "name", "status"]})
 if len(vm_rows) != 1 or vm_rows[0].get("status", {}).get("state") != "STOPPED":
     raise SystemExit("STOP: exact VM is not confirmed stopped")
