@@ -65,6 +65,10 @@ For a config-file preview:
 See [planner documentation](planning/README.md) for inventory checks, examples,
 tests and limitations. Preview success does not establish live compatibility.
 
+## Operator test runbooks
+
+The [console-only test disk-attach runbook](docs/operator-console-test-disk-attach.md) is a guarded, manual TrueNAS Shell step for an already-created disposable VM and zvol. It is not installer functionality; it does not start the VM, attach a NIC, provision the guest, or perform cleanup.
+
 ## Development
 
 Implementation work belongs on a feature branch and should be reviewed in an unmerged pull request. Do not treat the project as usable until installer code, tests, and supported-version documentation are published and reviewed.
