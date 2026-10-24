@@ -81,15 +81,25 @@ def _terminal_input(prompt):
     return answer.rstrip("\r\n")
 
 
-def _prompt_choice(options, label, input_fn, output, formatter=lambda value: str(value)):
+def _prompt_choice(options, label, input_fn, output, formatter=lambda value: str(value), default=None):
     options = tuple(options)
     if not options:
         raise ValidationError(f"no options available for {label}")
+    if default is not None and default not in options:
+        raise ValidationError(f"default is not an available choice for {label}")
+    default_index = options.index(default) + 1 if default is not None else None
     output.write(f"{label}:\n")
     for index, value in enumerate(options, start=1):
-        output.write(f"  {index}) {formatter(value)}\n")
+        marker = " (default)" if value == default else ""
+        output.write(f"  {index}) {formatter(value)}{marker}\n")
+    prompt = f"Choose {label} [1-{len(options)}"
+    if default_index is not None:
+        prompt += f"; Enter for default {default_index}"
+    prompt += "]: "
     while True:
-        answer = input_fn(f"Choose {label} [1-{len(options)}]: ").strip()
+        answer = input_fn(prompt).strip()
+        if not answer and default_index is not None:
+            return default
         if answer.isascii() and answer.isdecimal():
             selected = int(answer)
             if 1 <= selected <= len(options):
@@ -107,6 +117,21 @@ def _prompt_integer(label, default, low, high, input_fn, output):
             if low <= value <= high:
                 return value
         output.write(f"Enter a whole number from {low} to {high}.\n")
+
+
+def _prompt_preset_integer(label, presets, default, low, high, input_fn, output, formatter):
+    custom = "custom"
+    selected = _prompt_choice(
+        (*presets, custom),
+        label,
+        input_fn,
+        output,
+        formatter=lambda value: "Custom value" if value == custom else formatter(value),
+        default=default,
+    )
+    if selected == custom:
+        return _prompt_integer(f"Custom {label}", default, low, high, input_fn, output)
+    return selected
 
 
 def collect_interactive_config(
@@ -136,9 +161,9 @@ def collect_interactive_config(
 
     name = input_fn("VM name [linux-demo]: ").strip() or "linux-demo"
     if inventory is None:
-        output.write("No inventory supplied; pool and bridge selections will remain unchecked.\n")
+        output.write("No inventory supplied; type the pool and bridge. Pass --inventory for numbered saved choices; no live query occurs.\n")
         pool = input_fn("Existing non-boot storage pool (not a physical drive): ").strip()
-        bridge = input_fn("Existing network bridge (host networking will not be changed): ").strip()
+        bridge = input_fn("Existing network bridge (LAN attachment; host networking will not be changed): ").strip()
     else:
         validate_inventory(inventory)
         pools = tuple(sorted(
@@ -157,7 +182,7 @@ def collect_interactive_config(
         bridges = tuple(sorted(inventory["bridges"]))
         bridge = _prompt_choice(
             bridges,
-            "existing network bridge (no host-network changes)",
+            "existing network bridge (LAN attachment; no host-network changes)",
             input_fn,
             output,
         )
@@ -167,9 +192,18 @@ def collect_interactive_config(
         "name": name,
         "pool": pool,
         "bridge": bridge,
-        "vcpus": _prompt_integer("Total vCPUs", 2, 1, 128, input_fn, output),
-        "memory_mib": _prompt_integer("RAM MiB", 4096, 1024, 1048576, input_fn, output),
-        "disk_gib": _prompt_integer("VM virtual-disk size GiB", 32, 16, 65536, input_fn, output),
+        "vcpus": _prompt_preset_integer(
+            "CPU core count (vCPUs)", (1, 2, 4, 8, 16), 2, 1, 128,
+            input_fn, output, lambda value: f"{value} core{'s' if value != 1 else ''}",
+        ),
+        "memory_mib": _prompt_preset_integer(
+            "RAM MiB", (1024, 2048, 4096, 8192, 16384), 4096, 1024, 1048576,
+            input_fn, output, lambda value: f"{value // 1024} GiB ({value} MiB)",
+        ),
+        "disk_gib": _prompt_preset_integer(
+            "VM virtual disk/zvol size GiB (not a physical drive)", (16, 32, 64, 128, 256), 32,
+            16, 65536, input_fn, output, lambda value: f"{value} GiB",
+        ),
     }
 
 

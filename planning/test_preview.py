@@ -21,7 +21,7 @@ class PreviewTests(unittest.TestCase):
     def test_interactive_menu_offers_every_profile_and_resource_choice(self):
         for profile_index, profile in enumerate(PROFILES, start=1):
             with self.subTest(profile=profile):
-                answers = iter([str(profile_index), "menu-vm", "2", "1", "6", "8192", "64"])
+                answers = iter([str(profile_index), "menu-vm", "2", "1", "4", "4", "3"])
                 output = io.StringIO()
                 config = collect_interactive_config(
                     self.inventory,
@@ -32,7 +32,7 @@ class PreviewTests(unittest.TestCase):
                 self.assertEqual(config["name"], "menu-vm")
                 self.assertEqual(config["pool"], "tank")
                 self.assertEqual(config["bridge"], "br0")
-                self.assertEqual(config["vcpus"], 6)
+                self.assertEqual(config["vcpus"], 8)
                 self.assertEqual(config["memory_mib"], 8192)
                 self.assertEqual(config["disk_gib"], 64)
                 plan = build_plan(config, self.inventory)
@@ -42,9 +42,14 @@ class PreviewTests(unittest.TestCase):
                 self.assertIn("storage pool", output.getvalue())
                 self.assertIn("not an individual physical drive", output.getvalue())
                 self.assertIn("existing network bridge", output.getvalue())
+                self.assertIn("LAN attachment", output.getvalue())
+                self.assertIn("bulk", output.getvalue())
+                self.assertIn("br1", output.getvalue())
+                self.assertIn("Custom value", output.getvalue())
+                self.assertIn("8 GiB (8192 MiB)", output.getvalue())
 
     def test_interactive_profile_flag_skips_profile_menu(self):
-        answers = iter(["cli-profile-vm", "1", "2", "4", "4096", "32"])
+        answers = iter(["cli-profile-vm", "1", "2", "3", "2", "2"])
         config = collect_interactive_config(
             self.inventory,
             profile_override="debian-desktop",
@@ -58,7 +63,7 @@ class PreviewTests(unittest.TestCase):
     def test_interactive_pool_menu_excludes_boot_pool(self):
         inventory = json.loads(json.dumps(self.inventory))
         inventory["pools"]["boot-pool"] = {"available_bytes": 2**40}
-        answers = iter(["1", "safe-vm", "1", "1", "2", "4096", "32"])
+        answers = iter(["1", "safe-vm", "1", "1", "2", "3", "2"])
         output = io.StringIO()
         config = collect_interactive_config(
             inventory,
@@ -69,21 +74,36 @@ class PreviewTests(unittest.TestCase):
         self.assertNotIn("boot-pool", output.getvalue())
 
     def test_interactive_without_inventory_asks_for_pool_and_bridge(self):
-        answers = iter(["1", "manual-vm", "tank", "br0", "2", "4096", "32"])
+        answers = iter(["1", "manual-vm", "tank", "br0", "2", "3", "2"])
+        output = io.StringIO()
         config = collect_interactive_config(
             None,
             input_fn=lambda _prompt: next(answers),
-            output=io.StringIO(),
+            output=output,
         )
         plan = build_plan(config)
         self.assertEqual(config["pool"], "tank")
         self.assertEqual(config["bridge"], "br0")
         self.assertFalse(plan["inventory_checked"])
         self.assertTrue(any("unchecked" in warning for warning in plan["warnings"]))
+        self.assertIn("no live query occurs", output.getvalue())
+
+    def test_resource_menus_accept_defaults_and_custom_values(self):
+        defaults = iter(["1", "default-vm", "tank", "br0", "", "", ""])
+        output = io.StringIO()
+        config = collect_interactive_config(None, input_fn=lambda _prompt: next(defaults), output=output)
+        self.assertEqual((config["vcpus"], config["memory_mib"], config["disk_gib"]), (2, 4096, 32))
+        self.assertIn("2 cores (default)", output.getvalue())
+        self.assertIn("4 GiB (4096 MiB) (default)", output.getvalue())
+        self.assertIn("32 GiB (default)", output.getvalue())
+
+        custom = iter(["1", "custom-vm", "tank", "br0", "6", "24", "6", "6144", "6", "96"])
+        config = collect_interactive_config(None, input_fn=lambda _prompt: next(custom), output=io.StringIO())
+        self.assertEqual((config["vcpus"], config["memory_mib"], config["disk_gib"]), (24, 6144, 96))
 
     def test_interactive_main_emits_json_plan_without_apply(self):
         stdout, stderr = io.StringIO(), io.StringIO()
-        with patch("planning.preview.sys.stdin", io.StringIO("1\ncli-vm\ntank\nbr0\n2\n4096\n32\n")):
+        with patch("planning.preview.sys.stdin", io.StringIO("1\ncli-vm\ntank\nbr0\n2\n3\n2\n")):
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 self.assertEqual(main(["--interactive"]), 0)
         plan = json.loads(stdout.getvalue())
@@ -94,7 +114,7 @@ class PreviewTests(unittest.TestCase):
 
     def test_interactive_profile_cli_override_skips_menu(self):
         stdout, stderr = io.StringIO(), io.StringIO()
-        answers = io.StringIO("cli-profile-vm\ntank\nbr0\n2\n4096\n32\n")
+        answers = io.StringIO("cli-profile-vm\ntank\nbr0\n2\n3\n2\n")
         with patch("planning.preview.sys.stdin", answers):
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 self.assertEqual(main(["--interactive", "--profile", "debian-server"]), 0)

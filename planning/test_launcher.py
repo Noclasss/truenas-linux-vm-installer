@@ -13,7 +13,7 @@ class LauncherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as cwd:
             result = subprocess.run(
                 [str(ROOT / "install.sh"), "--interactive"],
-                input="1\nlauncher-vm\ntank\nbr0\n2\n4096\n32\n",
+                input="1\nlauncher-vm\ntank\nbr0\n3\n4\n3\n",
                 text=True,
                 capture_output=True,
                 cwd=cwd,
@@ -26,6 +26,9 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(plan["mode"], "offline-preview")
         self.assertFalse(plan["apply_supported"])
         self.assertEqual(plan["vm"]["name"], "launcher-vm")
+        self.assertEqual(plan["vm"]["cpu"]["total_vcpus"], 4)
+        self.assertEqual(plan["vm"]["memory_mib"], 8192)
+        self.assertEqual(plan["storage"]["disk_bytes"], 64 * 1024**3)
         self.assertFalse(plan["vm"]["start"])
 
 
