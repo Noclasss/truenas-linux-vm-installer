@@ -24,6 +24,7 @@ if __package__:
     from .ubuntu_server import (
         PROFILE_ID,
         ProfileValidationError,
+        STAGING_RESERVE_BYTES,
         ubuntu_server_stage_paths_from_dataset_rows,
     )
 else:
@@ -36,6 +37,7 @@ else:
     from ubuntu_server import (
         PROFILE_ID,
         ProfileValidationError,
+        STAGING_RESERVE_BYTES,
         ubuntu_server_stage_paths_from_dataset_rows,
     )
 
@@ -314,9 +316,9 @@ def _validate_request(
         raise MockInstallError("virtual disk size is outside the planner bounds")
     if request.seed_identifier != _MOCK_SEED_IDENTIFIER:
         raise MockInstallError("seed identifier must be the fixed mock-only URI")
-    disk_bytes = request.disk_gib * 1024**3
-    if pool["available_bytes"] < disk_bytes:
-        raise MockInstallError("mock pool capacity is below the requested virtual-disk size")
+    required_bytes = request.disk_gib * 1024**3 + STAGING_RESERVE_BYTES
+    if pool["available_bytes"] < required_bytes:
+        raise MockInstallError("mock pool capacity is below the disk plus profile staging reserve")
     return shared_parent, parent, zvol, f"/dev/zvol/{zvol}"
 
 

@@ -46,6 +46,8 @@ CHECKSUM_SIGNATURE_URL = CHECKSUM_MANIFEST_URL + ".gpg"
 SIGNING_KEY_FINGERPRINT = "D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81"
 IMAGE_FORMAT = "qcow2"
 IMAGE_VIRTUAL_SIZE_BYTES = 3_758_096_384
+SEED_ISO_MAX_BYTES = 16 * 1024 * 1024
+STAGING_RESERVE_BYTES = ARTIFACT_SIZE_BYTES + IMAGE_VIRTUAL_SIZE_BYTES + SEED_ISO_MAX_BYTES
 IMAGE_FORMAT_STATUS = "verified with qemu-img info on the pinned SHA-256-verified artifact"
 
 _USERNAME = re.compile(r"[a-z_][a-z0-9_-]{0,31}\Z")
@@ -401,6 +403,8 @@ def build_seed_iso(
                 raise SeedImageError("cloud-localds did not produce seed media") from exc
             if not stat.S_ISREG(output_info.st_mode) or output_info.st_size <= 0:
                 raise SeedImageError("cloud-localds output is not a nonempty regular file")
+            if output_info.st_size > SEED_ISO_MAX_BYTES:
+                raise SeedImageError("cloud-localds output exceeds the reserved seed staging limit")
             os.chmod(seed_path, 0o600, follow_symlinks=False)
             try:
                 os.link(seed_path, target, follow_symlinks=False)

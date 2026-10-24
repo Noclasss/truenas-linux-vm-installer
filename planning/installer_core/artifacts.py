@@ -107,6 +107,16 @@ def download_and_verify(
                 return destination
         destination.unlink()
 
+    # shortcut: unknown sizes use the full limit; add an exact pin to avoid over-reserving.
+    required_bytes = expected_size if expected_size is not None else max_bytes
+    try:
+        space = os.statvfs(cache_dir)
+        free_bytes = space.f_bavail * space.f_frsize
+    except OSError as exc:
+        raise ArtifactError("could not check free space on the artifact cache filesystem") from exc
+    if free_bytes < required_bytes:
+        raise ArtifactError("artifact cache filesystem has insufficient free space for the download")
+
     request = urllib.request.Request(url, headers={"User-Agent": "TrueNAS-Linux-VM-Installer"})
     partial: Path | None = None
     digest_state = hashlib.sha256()

@@ -16,6 +16,7 @@ from planning.mock_install import (
     live_profile_enabled,
     run_mock_install,
 )
+from planning.ubuntu_server import STAGING_RESERVE_BYTES
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "truenas-26.0.0-beta.2-method-contracts.json"
@@ -494,6 +495,20 @@ class MockInstallOrchestrationTests(unittest.TestCase):
                                      confirmation="CREATE MOCK MockUbuntu")
                 self.assertEqual(backend.writes, [])
                 self.assertFalse(path.exists())
+
+    def test_mock_capacity_floor_includes_profile_artifact_staging(self):
+        backend = make_backend()
+        required = request().disk_gib * 1024**3 + STAGING_RESERVE_BYTES
+        backend.pools["mock-pool"]["available_bytes"] = required - 1
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            with self.assertRaisesRegex(MockInstallError, "disk plus profile staging reserve"):
+                run_mock_install(
+                    request(), backend, manifest_path=path,
+                    confirmation="CREATE MOCK MockUbuntu",
+                )
+            self.assertEqual(backend.writes, [])
+            self.assertFalse(path.exists())
 
     def test_exact_existing_dataset_or_vm_is_never_overwritten(self):
         for kind in ("parent", "zvol", "descendant", "shared_wrong", "vm"):

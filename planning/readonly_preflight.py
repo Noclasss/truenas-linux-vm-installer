@@ -12,9 +12,11 @@ from typing import Any
 if __package__:
     from .installer_core.compatibility import CompatibilityError, verify_runtime_compatibility
     from .installer_core.schema import SchemaCheckedClient, SchemaError, validate_method_request
+    from .ubuntu_server import STAGING_RESERVE_BYTES
 else:  # direct execution as ``python planning/check_readonly_preflight.py``
     from installer_core.compatibility import CompatibilityError, verify_runtime_compatibility
     from installer_core.schema import SchemaCheckedClient, SchemaError, validate_method_request
+    from ubuntu_server import STAGING_RESERVE_BYTES
 
 
 READ_ONLY_METHODS = frozenset({
@@ -151,9 +153,15 @@ def run_read_only_preflight(
     free_bytes = pool.get("free")
     if type(free_bytes) is not int or free_bytes < 0:
         raise PreflightError("selected pool did not report a valid free-space byte count")
-    required_free_bytes = request.disk_gib * _GIB + request.pool_reserve_mib * _MIB
+    required_free_bytes = (
+        request.disk_gib * _GIB
+        + STAGING_RESERVE_BYTES
+        + request.pool_reserve_mib * _MIB
+    )
     if free_bytes < required_free_bytes:
-        raise PreflightError("selected pool has less than the full disk size plus requested reserve")
+        raise PreflightError(
+            "selected pool has less than the full disk, staging space, and requested reserve"
+        )
 
     bridge_result = _read(reader, methods, "vm.device.nic_attach_choices", [])
     if not isinstance(bridge_result, dict) or not isinstance(bridge_result.get("BRIDGE"), list):
@@ -244,7 +252,7 @@ def run_read_only_preflight(
         bridge_name=request.bridge_name,
         checks=(
             "exact build and reviewed request/return method contracts",
-            "caller-selected pool health, ONLINE state, and full-disk-plus-reserve capacity",
+            "caller-selected pool health, ONLINE state, and capacity for the full disk, artifact staging, and requested reserve",
             "caller-selected bridge is an eligible VM NIC attachment target",
             "VM name and intended dataset paths are collision-free",
             "hardware virtualization and requested vCPU limit",

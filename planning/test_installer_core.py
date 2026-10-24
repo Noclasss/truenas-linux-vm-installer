@@ -291,6 +291,42 @@ class ArtifactDownloadTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
             self.assertEqual(path.name, f"sha256-{digest}.artifact")
 
+    def test_insufficient_cache_space_fails_before_network_fetch(self):
+        data = b"payload"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / "cache"
+            for expected_size, max_bytes, free_bytes in ((len(data), 100, len(data) - 1), (None, 100, 99)):
+                with self.subTest(expected_size=expected_size):
+                    with mock.patch.object(
+                        artifacts.os, "statvfs", return_value=mock.Mock(f_bavail=free_bytes, f_frsize=1)
+                    ):
+                        with mock.patch.object(artifacts, "open_https_url") as open_url:
+                            with self.assertRaisesRegex(artifacts.ArtifactError, "insufficient free space"):
+                                artifacts.download_and_verify(
+                                    "https://example.test/file", digest, cache, max_bytes, expected_size
+                                )
+                            open_url.assert_not_called()
+                    self.assertEqual(list(cache.iterdir()), [])
+
+            with mock.patch.object(artifacts.os, "statvfs", side_effect=OSError("unavailable")):
+                with mock.patch.object(artifacts, "open_https_url") as open_url:
+                    with self.assertRaisesRegex(artifacts.ArtifactError, "could not check free space"):
+                        artifacts.download_and_verify(
+                            "https://example.test/file", digest, cache, 100, len(data)
+                        )
+                    open_url.assert_not_called()
+
+            response = self.Response([data, b""], {"Content-Length": str(len(data))})
+            with mock.patch.object(
+                artifacts.os, "statvfs", return_value=mock.Mock(f_bavail=len(data), f_frsize=1)
+            ):
+                with mock.patch.object(artifacts, "open_https_url", return_value=response):
+                    path = artifacts.download_and_verify(
+                        "https://example.test/file", digest, cache, 100, len(data)
+                    )
+            self.assertEqual(path.read_bytes(), data)
+
     def test_bad_scheme_digest_size_and_https_redirect_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(artifacts.ArtifactError, "HTTPS"):
@@ -344,9 +380,11 @@ class ArtifactDownloadTests(unittest.TestCase):
             entry.write_bytes(data)
             entry.chmod(0o600)
             with mock.patch.object(artifacts, "open_https_url") as open_url:
-                path = artifacts.download_and_verify("https://example.test/file", digest, cache, 100, len(data))
+                with mock.patch.object(artifacts.os, "statvfs") as statvfs:
+                    path = artifacts.download_and_verify("https://example.test/file", digest, cache, 100, len(data))
             self.assertEqual(path, entry)
             open_url.assert_not_called()
+            statvfs.assert_not_called()
             entry.unlink()
             outside = Path(directory) / "outside"
             outside.write_bytes(data)
