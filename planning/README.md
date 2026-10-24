@@ -28,6 +28,9 @@ python3 -m unittest discover -s planning -p 'test_*.py' -v
 [HAOS TrueNAS installer](https://github.com/Noclasss/haos-truenas-installer):
 local `midclt` calls with timeouts, middleware positional-schema validation,
 private and atomic file handling, and HTTPS-only digest/size-verified downloads.
+Before fetching an uncached artifact, the downloader checks available bytes on
+the actual cache filesystem against its pinned size, or the configured maximum
+when no exact size is known. This point-in-time check does not reserve space.
 The port includes mocked tests and keeps the upstream MIT notice in this repo's
 `LICENSE` file. See `docs/installer-core-provenance.md` for boundaries and source
 revision.
@@ -106,7 +109,7 @@ Storage selection is by **ZFS pool**, not an individual physical drive: the prop
 
 ## Read-only live preflight prototype
 
-`planning/check_readonly_preflight.py` is a separate, explicitly invoked read-only command for the experimental Ubuntu Server profile. It requires caller-selected values—including positive host-memory and pool-space reserves—and checks the exact-build fixture, selected pool health/capacity, selected bridge eligibility, VM/device/dataset path conflicts, virtualization support, CPU limit, and reported available memory. It cannot create a VM, dataset, device, or manifest and cannot start a VM. It prints only the selected identifiers and pass/fail checks, not the full queried inventory.
+`planning/check_readonly_preflight.py` is a separate, explicitly invoked read-only command for the experimental Ubuntu Server profile. It requires caller-selected values—including positive host-memory and pool-space reserves—and checks the exact-build fixture, selected pool health/capacity, selected bridge eligibility, VM/device/dataset path conflicts, virtualization support, CPU limit, and reported available memory. Its pool floor includes the requested zvol, up to 859,090,944 bytes for the pinned download cache, the pinned raw image's full 3,758,096,384-byte virtual size, a seed ISO capped at 16 MiB, and the caller-selected reserve. It cannot create a VM, dataset, device, or manifest and cannot start a VM. It prints only the selected identifiers and pass/fail checks, not the full queried inventory.
 
 Example invocation shape (use only deliberate caller-selected values):
 

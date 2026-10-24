@@ -14,8 +14,11 @@ from planning.ubuntu_server import (
     ARTIFACT_SHA256,
     ARTIFACT_SIZE_BYTES,
     ARTIFACT_URL,
+    IMAGE_VIRTUAL_SIZE_BYTES,
     PROFILE_STATUS,
     ProfileValidationError,
+    SEED_ISO_MAX_BYTES,
+    STAGING_RESERVE_BYTES,
     SeedImageError,
     artifact_metadata,
     build_cloud_config,
@@ -61,6 +64,12 @@ class UbuntuServerProfileTests(unittest.TestCase):
         self.assertEqual(ARTIFACT_SHA256, "5645d0318ad21f643ebb1ac4567514620e9893380b07b0201fda163baa5b7eb5")
         self.assertEqual(ARTIFACT_SIZE_BYTES, 859_090_944)
         self.assertEqual(len(ARTIFACT_SHA256), 64)
+
+    def test_staging_reserve_covers_download_raw_image_and_seed(self):
+        self.assertEqual(
+            STAGING_RESERVE_BYTES,
+            ARTIFACT_SIZE_BYTES + IMAGE_VIRTUAL_SIZE_BYTES + SEED_ISO_MAX_BYTES,
+        )
 
     def test_download_wrapper_uses_static_pin_without_network_in_test(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -192,6 +201,23 @@ class UbuntuServerProfileTests(unittest.TestCase):
             self.assertEqual(result, output)
             self.assertEqual(stat.S_IMODE(output_dir.stat().st_mode), 0o755)
             self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+
+    def test_seed_builder_rejects_output_above_reserved_staging_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "seed.iso"
+
+            def oversized_runner(args, **kwargs):
+                seed_path = Path(args[5])
+                with seed_path.open("wb") as stream:
+                    stream.truncate(SEED_ISO_MAX_BYTES + 1)
+                return subprocess.CompletedProcess(args, 0)
+
+            with self.assertRaisesRegex(SeedImageError, "staging limit"):
+                build_seed_iso(
+                    output, "test-vm", "alice", [dummy_public_key()], runner=oversized_runner,
+                )
+            self.assertFalse(output.exists())
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_seed_builder_refuses_overwrite_before_running_tool(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -16,6 +16,7 @@ from planning.readonly_preflight import (
     ReadOnlyPreflightRequest,
     run_read_only_preflight,
 )
+from planning.ubuntu_server import STAGING_RESERVE_BYTES
 
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "truenas-26.0.0-beta.2-method-contracts.json"
@@ -163,12 +164,30 @@ class ReadOnlyPreflightTests(unittest.TestCase):
             ([dict(self.responses["pool.query"][0], warning=True)], "unhealthy"),
             ([dict(self.responses["pool.query"][0], status="DEGRADED")], "not ONLINE"),
             ([dict(self.responses["pool.query"][0], free=None)], "free-space byte count"),
-            ([dict(self.responses["pool.query"][0], free=1)], "less than the full disk size"),
+            ([dict(self.responses["pool.query"][0], free=1)], "full disk, staging space, and requested reserve"),
         ]
         for pool_rows, expected in cases:
             with self.subTest(expected=expected):
                 client = self.assert_rejected(responses={**self.responses, "pool.query": pool_rows}, contains=expected)
                 self.assertIn("pool.query", [method for method, _ in client.calls])
+
+    def test_pool_capacity_includes_download_raw_staging_and_seed_budget(self):
+        required = (
+            self.request.disk_gib * 1024**3
+            + self.request.pool_reserve_mib * 1024**2
+            + STAGING_RESERVE_BYTES
+        )
+        self.assert_rejected(
+            responses={**self.responses, "pool.query": [
+                dict(self.responses["pool.query"][0], free=required - 1),
+            ]},
+            contains="full disk, staging space, and requested reserve",
+        )
+        report, _ = self.run_preflight(responses={
+            **self.responses,
+            "pool.query": [dict(self.responses["pool.query"][0], free=required)],
+        })
+        self.assertIn("artifact staging", " ".join(report.checks))
 
     def test_selected_bridge_must_be_eligible_not_substituted(self):
         client = self.assert_rejected(
