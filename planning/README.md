@@ -53,6 +53,15 @@ The sanitized `TrueNAS-26.0.0-BETA.2` fixture includes a `CDROM` device variant 
 
 Official references: [Ubuntu cloud images](https://cloud-images.ubuntu.com/releases/server/26.04/release-20261016/), [Ubuntu cloud-image signature verification](https://ubuntu.com/docs/public-images/public-images-how-to/verify-image-checksum/), [cloud-init NoCloud datasource](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html), and [Canonical cloud-utils](https://github.com/canonical/cloud-utils/blob/main/bin/cloud-localds).
 
+## Ubuntu Desktop profile (candidate, preview-only)
+
+`planning/ubuntu_desktop.py` currently exposes static candidate metadata for the official Ubuntu 26.04.1 Desktop amd64 ISO. Canonical's HTTPS release manifest lists SHA-256 `601e30fbf5d97759367c632e2c33630665039b7e2158fd068403da3ccf1bda1f`; an HTTPS HEAD response reported 6,482,409,472 bytes. The detached `SHA256SUMS.gpg` is available, but this development environment has no `gpg`/`gpgv`, so the signature has not been independently verified. The planner calls this a candidate pin and **does not download** it; a future downloader must verify exact size and digest against the pin.
+
+The candidate provisioning route is the official Desktop installer ISO with Subiquity autoinstall delivered by cloud-init NoCloud. Canonical's current docs list `ubuntu-desktop` and `ubuntu-desktop-minimal`, but the exact source ID must be read from the pinned ISO's `casper/install-sources.yaml`; it remains unset. Offline autoinstall JSON, SHA-512 crypt hashing through OpenSSL stdin, and a private mode-0600 2 MiB CIDATA VFAT raw-disk builder are now implemented and tested. The seed is designed as a separate non-bootable RAW disk, not a CD-ROM. TrueNAS documentation describes browser SPICE display access, and the Beta.2 fixture contains DISPLAY, CDROM and RAW request variants; none establishes current-build write acceptance, media handoff/access, autoinstall success, or graphical guest boot.
+
+The offline preview only displays metadata and explicit gaps; it does not download the ISO or create seed media. This is not a deployable profile: it cannot contact TrueNAS, create a VM, or install an OS. Keep the live-profile allowlist empty. The separately invoked read-only preflight accepts both Ubuntu Server and the Ubuntu Desktop candidate. It reuses exact-build checks for pool, bridge, name/path, virtualization, vCPU and available RAM; Desktop adds an ISO-plus-seed staging budget and validates the VM display-enable, CD-ROM installer, and RAW seed-disk request shapes against the reviewed method fixture. It does not prove display creation, host file access, installer boot, or graphical login. The offline preview never runs those live checks.
+
+[Canonical Ubuntu Desktop autoinstall support](https://canonical-subiquity.readthedocs-hosted.com/en/latest/intro-to-autoinstall.html), [NoCloud autoinstall delivery](https://canonical-subiquity.readthedocs-hosted.com/en/latest/tutorial/providing-autoinstall.html), [autoinstall source IDs](https://canonical-subiquity.readthedocs-hosted.com/en/latest/reference/autoinstall-reference.html), [Ubuntu 26.04.1 release files](https://releases.ubuntu.com/26.04.1/), and [TrueNAS VM display documentation](https://cdn.truenas.com/docs/scale/virtualmachines/virtualmachinesscreens/).
 
 For the separately authorized local schema snapshot, run this from the TrueNAS
 host shell (not from an ordinary development machine):
@@ -109,13 +118,13 @@ Storage selection is by **ZFS pool**, not an individual physical drive: the prop
 
 ## Read-only live preflight prototype
 
-`planning/check_readonly_preflight.py` is a separate, explicitly invoked read-only command for the experimental Ubuntu Server profile. It requires caller-selected values—including positive host-memory and pool-space reserves—and checks the exact-build fixture, selected pool health/capacity, selected bridge eligibility, VM/device/dataset path conflicts, virtualization support, CPU limit, and reported available memory. Its pool floor includes the requested zvol, up to 859,090,944 bytes for the pinned download cache, the pinned raw image's full 3,758,096,384-byte virtual size, a seed ISO capped at 16 MiB, and the caller-selected reserve. It cannot create a VM, dataset, device, or manifest and cannot start a VM. It prints only the selected identifiers and pass/fail checks, not the full queried inventory.
+`planning/check_readonly_preflight.py` is a separate, explicitly invoked read-only command for the experimental Ubuntu Server profile and Ubuntu Desktop candidate. It requires caller-selected values—including positive host-memory and pool-space reserves—and checks the exact-build fixture, selected pool health/capacity, selected bridge eligibility, VM/device/dataset path conflicts, virtualization support, CPU limit, and reported available memory. The profile-specific staging floor is added to the requested zvol and caller reserve: Server includes its pinned download, raw virtual-size staging, and seed-ISO cap; Desktop includes the pinned installer ISO and 2 MiB VFAT seed disk. For Desktop, reviewed VM-create display-enable, installer-CDROM, and NoCloud-RAW request shapes are checked before host calls. These schema checks do not establish that TrueNAS creates a display, grants effective media access, or boots the graphical guest. The command cannot create a VM, dataset, device, or manifest and cannot start a VM. It prints only selected identifiers and pass/fail checks, not the full queried inventory.
 
 Example invocation shape (use only deliberate caller-selected values):
 
 ```sh
 python3 planning/check_readonly_preflight.py \
-  --profile ubuntu-server --vm-name <vm-name> --pool <pool-name> --bridge <bridge-name> \
+  --profile ubuntu-desktop --vm-name <vm-name> --pool <pool-name> --bridge <bridge-name> \
   --vcpus <count> --memory-mib <mib> --disk-gib <gib> \
   --host-reserve-mib <mib> --pool-reserve-mib <mib>
 ```

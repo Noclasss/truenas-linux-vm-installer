@@ -19,12 +19,16 @@ The planned profiles are:
 
 All profiles are experimental until each has passed automated tests and disposable VM boot and first-boot checks on supported TrueNAS versions. Each image and edition needs its own verified source, provisioning method, boot configuration, resource defaults, and tests; a profile will not be labelled ready just because another distro works.
 
+## Ubuntu Desktop quick-deploy (work in progress)
+
+The first desktop candidate is the official Ubuntu 26.04.1 Desktop ISO with Subiquity autoinstall over NoCloud. The local feature branch now includes offline JSON autoinstall generation, SHA-512 crypt hashing through OpenSSL stdin, and a private 2 MiB CIDATA VFAT seed-disk builder; read-only preflight also checks the fixture-backed CD-ROM, raw seed-disk, and display request shapes. These helpers do not create a VM. The checksum signature has not been independently verified, the exact ISO source ID is not confirmed, and no installer boot, desktop login, or live writer has been tested. A pasteable deploy command is not available yet. See the [roadmap](docs/plans/2026-11-16-ubuntu-desktop-quick-deploy.md).
+
 ## Safety goals
 
 - Preview and inspect the plan before creating anything.
 - Create a new, explicitly named VM and installer-owned storage only; never overwrite existing VMs or disks.
 - Use official image sources and verify pinned integrity metadata before import.
-- Use per-distro unattended provisioning where supported, without collecting private SSH keys or account passwords.
+- Use per-distro unattended provisioning where supported; prompt locally for any required guest password and never send plaintext credentials in chat, source, or logs.
 - Reuse existing TrueNAS network choices; do not reconfigure host networking.
 - Leave new VMs powered off unless starting is explicitly requested.
 - Keep install manifests so failed runs can be reconciled safely.

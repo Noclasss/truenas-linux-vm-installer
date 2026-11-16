@@ -8,8 +8,18 @@ from pathlib import Path
 
 if __package__:
     from .ubuntu_server import artifact_metadata
+    from .ubuntu_desktop import (
+        DEFAULT_DISK_GIB, DEFAULT_MEMORY_MIB, DEFAULT_VCPUS,
+        MIN_DISK_GIB, MIN_MEMORY_MIB, MIN_VCPUS,
+        artifact_metadata as desktop_artifact_metadata,
+    )
 else:
     from ubuntu_server import artifact_metadata
+    from ubuntu_desktop import (
+        DEFAULT_DISK_GIB, DEFAULT_MEMORY_MIB, DEFAULT_VCPUS,
+        MIN_DISK_GIB, MIN_MEMORY_MIB, MIN_VCPUS,
+        artifact_metadata as desktop_artifact_metadata,
+    )
 
 
 PROFILES = ("ubuntu-server", "ubuntu-desktop", "debian-server", "debian-desktop")
@@ -187,22 +197,31 @@ def collect_interactive_config(
             output,
         )
 
+    if profile == "ubuntu-desktop":
+        vcpu_presets, vcpu_default, vcpu_minimum = (2, 4, 8, 16), DEFAULT_VCPUS, MIN_VCPUS
+        memory_presets, memory_default, memory_minimum = (6144, 8192, 16384), DEFAULT_MEMORY_MIB, MIN_MEMORY_MIB
+        disk_presets, disk_default, disk_minimum = (25, 32, 64, 128, 256), DEFAULT_DISK_GIB, MIN_DISK_GIB
+    else:
+        vcpu_presets, vcpu_default, vcpu_minimum = (1, 2, 4, 8, 16), 2, 1
+        memory_presets, memory_default, memory_minimum = (1024, 2048, 4096, 8192, 16384), 4096, 1024
+        disk_presets, disk_default, disk_minimum = (16, 32, 64, 128, 256), 32, 16
+
     return {
         "profile": profile,
         "name": name,
         "pool": pool,
         "bridge": bridge,
         "vcpus": _prompt_preset_integer(
-            "CPU core count (vCPUs)", (1, 2, 4, 8, 16), 2, 1, 128,
+            "CPU core count (vCPUs)", vcpu_presets, vcpu_default, vcpu_minimum, 128,
             input_fn, output, lambda value: f"{value} core{'s' if value != 1 else ''}",
         ),
         "memory_mib": _prompt_preset_integer(
-            "RAM MiB", (1024, 2048, 4096, 8192, 16384), 4096, 1024, 1048576,
+            "RAM MiB", memory_presets, memory_default, memory_minimum, 1048576,
             input_fn, output, lambda value: f"{value // 1024} GiB ({value} MiB)",
         ),
         "disk_gib": _prompt_preset_integer(
-            "VM virtual disk/zvol size GiB (not a physical drive)", (16, 32, 64, 128, 256), 32,
-            16, 65536, input_fn, output, lambda value: f"{value} GiB",
+            "VM virtual disk/zvol size GiB (not a physical drive)", disk_presets, disk_default,
+            disk_minimum, 65536, input_fn, output, lambda value: f"{value} GiB",
         ),
     }
 
@@ -215,10 +234,14 @@ def build_plan(config, inventory=None):
         component(config[key], key)
     if config["pool"].casefold() in {"boot-pool", "freenas-boot"}:
         raise ValidationError("the boot pool cannot be a VM storage target")
-    # Conservative planning bounds, not distribution or TrueNAS support claims.
-    integer(config["vcpus"], 1, 128, "vcpus")
-    integer(config["memory_mib"], 1024, 1048576, "memory_mib")
-    integer(config["disk_gib"], 16, 65536, "disk_gib")
+    # Guest minimums are release-note floors, not host-capacity evidence.
+    if config["profile"] == "ubuntu-desktop":
+        vcpu_min, memory_min, disk_min = MIN_VCPUS, MIN_MEMORY_MIB, MIN_DISK_GIB
+    else:
+        vcpu_min, memory_min, disk_min = 1, 1024, 16
+    integer(config["vcpus"], vcpu_min, 128, "vcpus")
+    integer(config["memory_mib"], memory_min, 1048576, "memory_mib")
+    integer(config["disk_gib"], disk_min, 65536, "disk_gib")
     parent = f"{config['pool']}/linux-vms"
     dataset = f"{parent}/{config['name']}"
     disk_bytes = config["disk_gib"] * 1024**3
@@ -228,6 +251,15 @@ def build_plan(config, inventory=None):
             "Image format is verified as qcow2 with qemu-img; import/conversion and live installation are not implemented.",
             "No live TrueNAS schema, CPU, RAM, network or storage checks were performed.",
             "This plan cannot be applied. A future installer must recheck live state immediately before creating resources.",
+        ]
+    elif config["profile"] == "ubuntu-desktop":
+        warnings = [
+            "Ubuntu Desktop ISO metadata is a candidate pin; the detached signature has not been independently verified.",
+            "Current Canonical docs list ubuntu-desktop and ubuntu-desktop-minimal, but the exact ISO source ID must be confirmed from casper/install-sources.yaml.",
+            "Ubuntu 26.04 release notes specify 6 GiB RAM and 25 GiB storage minimums; a 2-vCPU request does not guarantee a 2 GHz host core or usable graphical performance.",
+            "Offline autoinstall and private VFAT NoCloud seed builders exist; this preview does not create seed media or invoke OpenSSL.",
+            "This offline preview did not query TrueNAS; Desktop request checks are fixture-backed only and have not been run against a live host.",
+            "This plan cannot be applied. Installer boot, actual display creation, and graphical login remain untested.",
         ]
     else:
         warnings = [
@@ -292,6 +324,22 @@ def build_plan(config, inventory=None):
                 "ssh_public_keys_required": True,
                 "ssh_password_auth": False,
                 "root_login": False,
+            },
+        }
+    elif config["profile"] == "ubuntu-desktop":
+        plan["guest_bootstrap"] = {
+            "artifact": desktop_artifact_metadata(),
+            "provisioning": {
+                "method": "Subiquity autoinstall",
+                "datasource": "NoCloud",
+                "delivery": "cloud-config on CIDATA seed media",
+                "seed_media": "2 MiB FAT12/VFAT raw data disk, not a CD-ROM or ISO",
+                "seed_media_builder": "dependency-free Python; mode-0600 output",
+                "credential_handling": "local prompt candidate; OpenSSL SHA-512 crypt via stdin; hash remains sensitive",
+                "desktop_source_id": None,
+                "source_id_status": "must be inspected in casper/install-sources.yaml from this exact ISO",
+                "configuration_status": "offline JSON autoinstall and seed-media builders implemented; exact ISO source ID and guest behavior unverified",
+                "post_install_power_state": "autoinstall requests poweroff; live orchestration is not implemented",
             },
         }
     return plan

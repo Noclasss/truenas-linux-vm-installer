@@ -21,7 +21,7 @@ class PreviewTests(unittest.TestCase):
     def test_interactive_menu_offers_every_profile_and_resource_choice(self):
         for profile_index, profile in enumerate(PROFILES, start=1):
             with self.subTest(profile=profile):
-                answers = iter([str(profile_index), "menu-vm", "2", "1", "4", "4", "3"])
+                answers = iter([str(profile_index), "menu-vm", "2", "1", "3" if profile == "ubuntu-desktop" else "4", "2" if profile == "ubuntu-desktop" else "4", "3"])
                 output = io.StringIO()
                 config = collect_interactive_config(
                     self.inventory,
@@ -101,6 +101,23 @@ class PreviewTests(unittest.TestCase):
         config = collect_interactive_config(None, input_fn=lambda _prompt: next(custom), output=io.StringIO())
         self.assertEqual((config["vcpus"], config["memory_mib"], config["disk_gib"]), (24, 6144, 96))
 
+    def test_desktop_interactive_defaults_meet_release_minimums(self):
+        answers = iter(["UbuntuDesk01", "tank", "br0", "", "", ""])
+        config = collect_interactive_config(
+            profile_override="ubuntu-desktop",
+            input_fn=lambda _prompt: next(answers),
+            output=io.StringIO(),
+        )
+        self.assertEqual(config["vcpus"], 2)
+        self.assertEqual(config["memory_mib"], 6144)
+        self.assertEqual(config["disk_gib"], 32)
+
+    def test_desktop_plan_rejects_values_below_release_minimums(self):
+        for field, value in (("vcpus", 1), ("memory_mib", 6143), ("disk_gib", 24)):
+            with self.subTest(field=field):
+                with self.assertRaises(ValidationError):
+                    build_plan(dict(self.config, profile="ubuntu-desktop", **{field: value}))
+
     def test_interactive_main_emits_json_plan_without_apply(self):
         stdout, stderr = io.StringIO(), io.StringIO()
         with patch("planning.preview.sys.stdin", io.StringIO("1\ncli-vm\ntank\nbr0\n2\n3\n2\n")):
@@ -133,7 +150,7 @@ class PreviewTests(unittest.TestCase):
     def test_all_profiles_remain_experimental(self):
         for profile in PROFILES:
             with self.subTest(profile=profile):
-                plan = build_plan(dict(self.config, profile=profile))
+                plan = build_plan(dict(self.config, profile=profile, **({"memory_mib": 6144} if profile == "ubuntu-desktop" else {})))
                 self.assertEqual(plan["profile"]["status"], "experimental")
                 self.assertFalse(plan["apply_supported"])
 
@@ -158,9 +175,35 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(bootstrap["provisioning"]["device_type"], "CDROM")
         self.assertIn("schema-only", bootstrap["provisioning"]["device_evidence"])
 
-    def test_non_ubuntu_server_profiles_have_no_ubuntu_artifact(self):
+    def test_ubuntu_desktop_preview_has_only_unverified_candidate_metadata(self):
+        plan = build_plan(dict(self.config, profile="ubuntu-desktop", memory_mib=6144))
+        self.assertEqual(plan["mode"], "offline-preview")
+        self.assertFalse(plan["apply_supported"])
+        self.assertEqual(plan["profile"]["status"], "experimental")
+        bootstrap = plan["guest_bootstrap"]
+        artifact = bootstrap["artifact"]
+        self.assertEqual(artifact["url"], "https://releases.ubuntu.com/26.04.1/ubuntu-26.04.1-desktop-amd64.iso")
+        self.assertEqual(artifact["sha256"], "601e30fbf5d97759367c632e2c33630665039b7e2158fd068403da3ccf1bda1f")
+        self.assertEqual(artifact["size_bytes"], 6_482_409_472)
+        self.assertEqual(artifact["staging_reserve_bytes"], artifact["size_bytes"] + artifact["seed_media_size_bytes"])
+        self.assertEqual(artifact["seed_media_size_bytes"], 2 * 1024**2)
+        self.assertIn("VFAT raw disk image", artifact["seed_media_format"])
+        self.assertEqual(artifact["image_format"], "iso")
+        self.assertIn("signature not independently verified", artifact["integrity_status"])
+        self.assertEqual(bootstrap["provisioning"]["method"], "Subiquity autoinstall")
+        self.assertEqual(bootstrap["provisioning"]["datasource"], "NoCloud")
+        self.assertEqual(bootstrap["provisioning"]["seed_media"], "2 MiB FAT12/VFAT raw data disk, not a CD-ROM or ISO")
+        self.assertIsNone(bootstrap["provisioning"]["desktop_source_id"])
+        self.assertIn("exact ISO", bootstrap["provisioning"]["source_id_status"])
+        self.assertIn("builders implemented", bootstrap["provisioning"]["configuration_status"])
+        self.assertTrue(any("source ID must be confirmed" in warning for warning in plan["warnings"]))
+        self.assertTrue(any("fixture-backed only" in warning for warning in plan["warnings"]))
+        self.assertFalse(plan["vm"]["start"])
+        self.assertFalse(plan["vm"]["autostart"])
+
+    def test_non_ubuntu_profiles_have_no_ubuntu_artifact(self):
         for profile in PROFILES:
-            if profile == "ubuntu-server":
+            if profile in {"ubuntu-server", "ubuntu-desktop"}:
                 continue
             with self.subTest(profile=profile):
                 plan = build_plan(dict(self.config, profile=profile))
