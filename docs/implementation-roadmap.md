@@ -1,10 +1,30 @@
 # Implementation Roadmap
 
-**Current state (2026-10-24):** an experimental offline planner, tested reusable safety helpers, Ubuntu Server artifact/NoCloud preparation, and mock-only orchestration. PRs #10–#18 are merged; PR #19 refreshed status documentation, docs-only PR #23 added the console-only operator runbook, and PR #26 fixed standalone artifact staging/seed imports (merge commit `304e089355d58d9015ec3f6fef5d8bd55827fdfa`). The latest functional change on the base `main` was PR #26. This change adds pool-staging and local artifact-cache capacity guards; no live installer writer is added. No Linux VM has been created by this repository. A separately authorized synthetic conversion probe and console-only Ubuntu Server boot test are documented below; neither exercised repository code. Conversion-probe resources were cleaned up; cleanup was not part of the separate VM test.
+**Current state (2026-11-16):** an experimental offline planner, reusable safety
+helpers, Ubuntu Server artifact/NoCloud preparation, and Server/Desktop mock
+orchestration. The latest functional merge is PR #36 at
+`89c2cd29d8c7d0de4d1e890cb41872b4388c1a3d`. No live installer writer is released.
 
-**Local work in progress (2026-11-16):** branch `feat/ubuntu-desktop-quick-deploy` starts from `main` SHA `515e2fc5288d514f2fe5a7c0989565c0dd31d732`. It adds candidate ISO metadata, offline autoinstall/password-hash/NoCloud-VFAT helpers, and a read-only preflight for display, installer-CDROM and seed-RAW request shapes with an ISO-plus-seed space budget. It has not been committed or published; no live TrueNAS preflight was run.
+Desktop work previously described here as unpublished is now merged: offline
+autoinstall/password-hash/VFAT helpers, staging-capacity guards, planner-compatible
+VM names, enforced fake preflight and filesystem-parent ordering (#34), reviewed
+Beta.2 write-intent schema validation (#35), and private atomic mock ownership
+manifests with read-only recovery reports (#36). Recovery cannot continue or
+delete resources; simulated inventory and schema matches do not prove live writes.
 
-**GitHub status verified 2026-10-22:** PR #17 was merged as `ebc8081aa23d4ba43071c09420e0c36c141d95b1`; its planner run [39832859709](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39832859709) passed. PR #18 was merged as `506c3d201073db00266439cf56802b11abbc5551`; its planner run [39855166968](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39855166968) passed. PR #19 was squash-merged as `d30981cf95f114ad0a2b4f35ce04c9858e998057`; its hosted planner run [39859693278](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39859693278) passed. PRs #17 and #18 reported 150 and 152 local tests. These are offline results only and do not establish live TrueNAS behavior.
+**Verification:** the post-merge [planner run 43961915844](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/43961915844)
+passed unit tests, compilation, preview examples, and whitespace checks on that
+exact commit. No local tests were rerun during this documentation refresh.
+
+**Remaining Desktop gates:** verify the checksum-manifest signature and exact ISO
+source ID, separately review and implement the live writer and ownership/recovery
+integration, then validate unattended installation, poweroff and graphical login
+on an authorized disposable target. Keep `LIVE_PROFILE_ALLOWLIST` empty until
+the release gates are met. See the [Desktop plan](plans/2026-11-16-ubuntu-desktop-quick-deploy.md).
+
+Separate operator-run synthetic conversion and Ubuntu Server console-boot evidence
+is preserved below. Neither exercised repository installer code. Conversion-probe
+resources were cleaned up; cleanup was not part of the separate VM test.
 
 ## GitHub tracking milestones
 
@@ -28,7 +48,7 @@
 | Mock orchestration | Stateful fake rehearses the candidate write sequence, including an in-memory `vm.device.convert` model only for a fresh run-owned zvol. It validates the captured request schema, enforces the synthetic source size floor, records pending/acknowledged manifest state, and reconciles ambiguous outcomes as manual-review-only without retry. | Fake-only; no `midclt`, downloads, actual conversion, host storage writes, or live resource creation. |
 | TrueNAS compatibility | Sanitized request/return contracts for 20 selected methods on `TrueNAS-26.0.0-BETA.2`; bounded fail-closed validator and read-only comparison probe. Merged PR #10 narrowly handles exact `True`/`False` output for `vm.supports_virtualization` on this build. | Operator-reported contract/preflight results do not prove write acceptance, runtime resource behavior, or guest boot. |
 | Read-only preflight | `planning/readonly_preflight.py` and `planning/check_readonly_preflight.py` verify caller-selected pool, bridge, VM name, resource limits, and exact-build compatibility using allowlisted reads; the capacity floor covers the zvol, up to 859,090,944 bytes for the download cache, the pinned raw-image virtual size, a seed ISO capped at 16 MiB, and the explicit caller reserve. No resource is selected automatically. | Operator-provided output from pinned code `9e89be1b932750d3010f40cd68a916b8afd43a70` reports a pass on Beta.2: all 20 contracts and listed pool, bridge, conflict, virtualization/vCPU, and memory checks passed. Only read methods ran; no resources were created. This is not independently reproduced or write authorization. |
-| Ubuntu Desktop local work | Candidate ISO metadata and offline credential/config/media helpers exist. The opt-in preflight reuses exact-build pool/network/name/CPU/RAM checks, budgets the pinned ISO plus 2 MiB seed disk, and validates display, installer-CDROM, and NoCloud-RAW request shapes against the reviewed fixture. A new feature branch adds a private atomic fake manifest and read-only ownership/reconciliation report with before/after fault injection. | Candidate checksum signature and exact ISO source ID remain unverified; no live preflight, VM creation, installer, or graphical boot was run. Ownership persistence/recovery remains mock-only and continuation is intentionally disabled. |
+| Ubuntu Desktop local work | Candidate ISO metadata and offline credential/config/media helpers exist. The opt-in preflight reuses exact-build pool/network/name/CPU/RAM checks, budgets the pinned ISO plus 2 MiB seed disk, and validates display, installer-CDROM, and NoCloud-RAW request shapes against the reviewed fixture. Merged PR #36 adds a private atomic fake manifest and read-only ownership/reconciliation report with before/after fault injection. | Candidate checksum signature and exact ISO source ID remain unverified; no live preflight, VM creation, installer, or graphical boot was run. Ownership persistence/recovery remains mock-only and continuation is intentionally disabled. |
 | CI | The PR #17 planner run [39832859709](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39832859709), PR #18 run [39855166968](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39855166968), and PR #19 run [39859693278](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39859693278) completed successfully. PRs #17 and #18 reported 150 and 152 local tests; PR #19 was docs-only. | Hosted checks and offline tests do not establish live TrueNAS compatibility or guest behavior. |
 
 **Independent read-only rerun (2026-10-22):** the exact-build comparison matched all 20 contracts, and the existing preflight logic passed its selected pool, bridge, conflict, virtualization/vCPU, and memory checks using current middleware responses collected over strict key-only SSH. No write methods ran. The preflight logic was executed locally through a temporary SSH response adapter, not through the checked-in CLI or local `midclt` adapter. Noninteractive root elevation was unavailable; no host staging, `/dev/zvol` access, write acceptance, or guest behavior was tested.
