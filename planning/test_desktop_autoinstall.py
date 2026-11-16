@@ -124,7 +124,7 @@ class DesktopAutoinstallTests(unittest.TestCase):
                     "vcpus": 2, "memory_mib": 6144, "disk_gib": 32,
                 })
                 self.assertEqual(plan["vm"]["name"], name)
-                config = json.loads(self.build_config(vm_name=name).split("\\n", 1)[1])
+                config = json.loads(self.build_config(vm_name=name).split("\n", 1)[1])
                 hostname = config["autoinstall"]["identity"]["hostname"]
                 meta = json.loads(build_desktop_meta_data(name))
                 self.assertEqual(hostname, meta["local-hostname"])
@@ -138,7 +138,7 @@ class DesktopAutoinstallTests(unittest.TestCase):
         self.assertNotEqual(dash, underscore)
 
     def test_ordinary_short_name_preserves_existing_hostname(self):
-        data = json.loads(self.build_config(vm_name="UbuntuDesk01").split("\\n", 1)[1])
+        data = json.loads(self.build_config(vm_name="UbuntuDesk01").split("\n", 1)[1])
         self.assertEqual(data["autoinstall"]["identity"]["hostname"], "ubuntu-ubuntudesk01")
 
     def test_rejects_unsafe_identity_inputs(self):
