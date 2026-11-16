@@ -1,4 +1,4 @@
-"""Read-only, exact-build TrueNAS preflight for the experimental Ubuntu profile.
+"""Read-only, exact-build TrueNAS preflight for experimental Ubuntu profiles.
 
 This module never creates a VM, dataset, manifest, or device. Resource choices
 are mandatory caller inputs; read-only queries only verify those choices.
@@ -12,11 +12,10 @@ from typing import Any
 if __package__:
     from .installer_core.compatibility import CompatibilityError, verify_runtime_compatibility
     from .installer_core.schema import SchemaCheckedClient, SchemaError, validate_method_request
-    from .ubuntu_server import STAGING_RESERVE_BYTES
 else:  # direct execution as ``python planning/check_readonly_preflight.py``
     from installer_core.compatibility import CompatibilityError, verify_runtime_compatibility
     from installer_core.schema import SchemaCheckedClient, SchemaError, validate_method_request
-    from ubuntu_server import STAGING_RESERVE_BYTES
+
 
 
 READ_ONLY_METHODS = frozenset({
@@ -51,6 +50,7 @@ class ReadOnlyPreflightRequest:
     disk_gib: int
     host_reserve_mib: int
     pool_reserve_mib: int
+    staging_reserve_bytes: int
 
 
 @dataclass(frozen=True)
@@ -68,8 +68,8 @@ class ReadOnlyPreflightReport:
 def _validate_request(request: ReadOnlyPreflightRequest) -> None:
     if not isinstance(request, ReadOnlyPreflightRequest):
         raise PreflightError("preflight request has an unsupported type")
-    if request.profile != "ubuntu-server":
-        raise PreflightError("read-only live preflight is implemented only for ubuntu-server")
+    if request.profile not in {"ubuntu-server", "ubuntu-desktop"}:
+        raise PreflightError("unsupported profile for read-only live preflight")
     if not isinstance(request.vm_name, str) or not _VM_NAME.fullmatch(request.vm_name):
         raise PreflightError("VM name must start with an ASCII letter and contain only ASCII letters or digits")
     if not isinstance(request.pool_name, str) or not _COMPONENT.fullmatch(request.pool_name):
@@ -78,12 +78,16 @@ def _validate_request(request: ReadOnlyPreflightRequest) -> None:
         raise PreflightError("boot pools are not eligible VM storage targets")
     if not isinstance(request.bridge_name, str) or not _BRIDGE.fullmatch(request.bridge_name):
         raise PreflightError("bridge name is invalid")
+    minimum_vcpus, minimum_memory_mib, minimum_disk_gib = (
+        (2, 6 * 1024, 25) if request.profile == "ubuntu-desktop" else (1, 1024, 16)
+    )
     bounds = (
-        (request.vcpus, 1, 128, "vCPU count"),
-        (request.memory_mib, 1024, 1_048_576, "RAM MiB"),
-        (request.disk_gib, 16, 65_536, "virtual disk GiB"),
+        (request.vcpus, minimum_vcpus, 128, "vCPU count"),
+        (request.memory_mib, minimum_memory_mib, 1_048_576, "RAM MiB"),
+        (request.disk_gib, minimum_disk_gib, 65_536, "virtual disk GiB"),
         (request.host_reserve_mib, 1, 1_048_576, "host memory reserve MiB"),
         (request.pool_reserve_mib, 1, 1_048_576, "pool free-space reserve MiB"),
+        (request.staging_reserve_bytes, 1, 2**63 - 1, "artifact/seed staging reserve bytes"),
     )
     for value, low, high, label in bounds:
         if type(value) is not int or not low <= value <= high:
@@ -106,6 +110,46 @@ def _read(client: SchemaCheckedClient, methods: dict[str, Any], method: str, par
         raise PreflightError(f"reviewed request for {method} failed schema validation") from exc
 
 
+def _validate_desktop_request_shapes(methods: dict[str, Any], request: ReadOnlyPreflightRequest) -> None:
+    if request.profile != "ubuntu-desktop":
+        return
+    samples = (
+        ("vm.create", [{
+            "name": request.vm_name,
+            "vcpus": request.vcpus,
+            "cores": request.vcpus,
+            "threads": 1,
+            "memory": request.memory_mib,
+            "autostart": False,
+            "ensure_display_device": True,
+        }]),
+        ("vm.device.create", [{
+            "vm": 1,
+            "attributes": {
+                "dtype": "CDROM",
+                "path": f"/mnt/{request.pool_name}/linux-vms/{request.vm_name}/ubuntu-installer.iso",
+            },
+        }]),
+        ("vm.device.create", [{
+            "vm": 1,
+            "attributes": {
+                "dtype": "RAW",
+                "path": f"/mnt/{request.pool_name}/linux-vms/{request.vm_name}/cidata.img",
+                "exists": True,
+                "boot": False,
+                "type": "AHCI",
+            },
+        }]),
+    )
+    try:
+        for method, params in samples:
+            validate_method_request(methods, method, params)
+    except SchemaError as exc:
+        raise PreflightError(
+            "reviewed Ubuntu Desktop VM/display, installer CD-ROM, or NoCloud RAW-disk request shape is unsupported"
+        ) from exc
+
+
 def run_read_only_preflight(
     client: Any,
     fixture: dict[str, Any],
@@ -120,6 +164,7 @@ def run_read_only_preflight(
     methods = fixture.get("methods") if isinstance(fixture, dict) else None
     if not isinstance(methods, dict):
         raise PreflightError("reviewed method fixture is malformed")
+    _validate_desktop_request_shapes(methods, request)
     semantics = fixture.get("method_semantics")
     for field, unit in (
         ("pool.query.free", "bytes"),
@@ -155,7 +200,7 @@ def run_read_only_preflight(
         raise PreflightError("selected pool did not report a valid free-space byte count")
     required_free_bytes = (
         request.disk_gib * _GIB
-        + STAGING_RESERVE_BYTES
+        + request.staging_reserve_bytes
         + request.pool_reserve_mib * _MIB
     )
     if free_bytes < required_free_bytes:
@@ -187,7 +232,15 @@ def run_read_only_preflight(
     device_rows = _query_rows(_read(reader, methods, "vm.device.query", [[], {
         "select": ["id", "vm", "attributes"],
     }]), "vm.device.query")
-    intended_device_path = f"/dev/zvol/{request.pool_name}/linux-vms/{request.vm_name}/disk0"
+    intended_device_paths = {
+        f"/dev/zvol/{request.pool_name}/linux-vms/{request.vm_name}/disk0": "zvol",
+    }
+    if request.profile == "ubuntu-desktop":
+        media_root = f"/mnt/{request.pool_name}/linux-vms/{request.vm_name}"
+        intended_device_paths.update({
+            f"{media_root}/ubuntu-installer.iso": "installer ISO",
+            f"{media_root}/cidata.img": "NoCloud seed image",
+        })
     for row in device_rows:
         attributes = row.get("attributes")
         if not isinstance(attributes, dict):
@@ -195,8 +248,10 @@ def run_read_only_preflight(
         device_path = attributes.get("path")
         if device_path is not None and not isinstance(device_path, str):
             raise PreflightError("VM device query returned an invalid device path")
-        if isinstance(device_path, str) and device_path.casefold() == intended_device_path.casefold():
-            raise PreflightError("an existing VM device already references the intended zvol path")
+        if isinstance(device_path, str):
+            for intended_path, resource_kind in intended_device_paths.items():
+                if device_path.casefold() == intended_path.casefold():
+                    raise PreflightError(f"an existing VM device already references the intended {resource_kind} path")
 
     dataset_rows = _query_rows(_read(reader, methods, "pool.dataset.query", [[], {
         "select": ["id", "type"],
@@ -244,18 +299,23 @@ def run_read_only_preflight(
     if available_memory_bytes < required_memory_bytes:
         raise PreflightError("host available memory is below the VM request plus requested reserve")
 
+    checks = (
+        "exact build and reviewed request/return method contracts",
+        "caller-selected pool health, ONLINE state, and capacity for the full disk, artifact staging, and requested reserve",
+        "caller-selected bridge is an eligible VM NIC attachment target",
+        "VM name and intended dataset paths are collision-free",
+        "hardware virtualization and requested vCPU limit",
+        "available memory meets the request plus caller-selected reserve",
+    )
+    if request.profile == "ubuntu-desktop":
+        checks += (
+            "desktop VM display enablement, installer CD-ROM, and NoCloud RAW data-disk requests match reviewed exact-build schemas",
+        )
     return ReadOnlyPreflightReport(
         truenas_version=compatibility.truenas_version,
         checked_method_contracts=len(compatibility.checked_methods),
         vm_name=request.vm_name,
         pool_name=request.pool_name,
         bridge_name=request.bridge_name,
-        checks=(
-            "exact build and reviewed request/return method contracts",
-            "caller-selected pool health, ONLINE state, and capacity for the full disk, artifact staging, and requested reserve",
-            "caller-selected bridge is an eligible VM NIC attachment target",
-            "VM name and intended dataset paths are collision-free",
-            "hardware virtualization and requested vCPU limit",
-            "available memory meets the request plus caller-selected reserve",
-        ),
+        checks=checks,
     )

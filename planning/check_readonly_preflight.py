@@ -10,11 +10,15 @@ try:
     from .installer_core.compatibility import CompatibilityError
     from .installer_core.middleware import MiddlewareError, MidcltClient
     from .readonly_preflight import PreflightError, ReadOnlyPreflightRequest, run_read_only_preflight
+    from .ubuntu_desktop import STAGING_RESERVE_BYTES as DESKTOP_STAGING_RESERVE_BYTES
+    from .ubuntu_server import STAGING_RESERVE_BYTES as SERVER_STAGING_RESERVE_BYTES
     from .verify_compatibility import DEFAULT_FIXTURE, load_fixture
 except ImportError:  # direct execution as ``python planning/check_readonly_preflight.py``
     from installer_core.compatibility import CompatibilityError
     from installer_core.middleware import MiddlewareError, MidcltClient
     from readonly_preflight import PreflightError, ReadOnlyPreflightRequest, run_read_only_preflight
+    from ubuntu_desktop import STAGING_RESERVE_BYTES as DESKTOP_STAGING_RESERVE_BYTES
+    from ubuntu_server import STAGING_RESERVE_BYTES as SERVER_STAGING_RESERVE_BYTES
     from verify_compatibility import DEFAULT_FIXTURE, load_fixture
 
 
@@ -26,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     parser.add_argument("--fixture", type=Path, default=DEFAULT_FIXTURE)
-    parser.add_argument("--profile", required=True, choices=("ubuntu-server",))
+    parser.add_argument("--profile", required=True, choices=("ubuntu-server", "ubuntu-desktop"))
     parser.add_argument("--vm-name", required=True)
     parser.add_argument("--pool", required=True, help="caller-selected, non-boot storage pool")
     parser.add_argument("--bridge", required=True, help="caller-selected existing VM bridge")
@@ -47,6 +51,10 @@ def main(argv: list[str] | None = None) -> int:
         disk_gib=args.disk_gib,
         host_reserve_mib=args.host_reserve_mib,
         pool_reserve_mib=args.pool_reserve_mib,
+        staging_reserve_bytes={
+            "ubuntu-server": SERVER_STAGING_RESERVE_BYTES,
+            "ubuntu-desktop": DESKTOP_STAGING_RESERVE_BYTES,
+        }[args.profile],
     )
     client = None
     try:

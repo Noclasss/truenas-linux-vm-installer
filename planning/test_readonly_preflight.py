@@ -16,6 +16,7 @@ from planning.readonly_preflight import (
     ReadOnlyPreflightRequest,
     run_read_only_preflight,
 )
+from planning.ubuntu_desktop import STAGING_RESERVE_BYTES as DESKTOP_STAGING_RESERVE_BYTES
 from planning.ubuntu_server import STAGING_RESERVE_BYTES
 
 
@@ -56,6 +57,7 @@ class ReadOnlyPreflightTests(unittest.TestCase):
             disk_gib=32,
             host_reserve_mib=2048,
             pool_reserve_mib=8192,
+            staging_reserve_bytes=STAGING_RESERVE_BYTES,
         )
         self.responses = {
             "pool.query": [{
@@ -131,8 +133,106 @@ class ReadOnlyPreflightTests(unittest.TestCase):
             validate_method_request(self.fixture["methods"], method, params)
 
     def test_rejects_non_ubuntu_profile_before_any_host_call(self):
-        client = self.assert_rejected(request=replace(self.request, profile="debian-server"), contains="only for ubuntu-server")
+        client = self.assert_rejected(request=replace(self.request, profile="debian-server"), contains="unsupported profile")
         self.assertEqual(client.calls, [])
+
+    def test_desktop_profile_reuses_shared_preflight_with_iso_staging_budget(self):
+        request = replace(
+            self.request,
+            profile="ubuntu-desktop",
+            memory_mib=6144,
+            staging_reserve_bytes=DESKTOP_STAGING_RESERVE_BYTES,
+        )
+        required = (
+            request.disk_gib * 1024**3
+            + request.pool_reserve_mib * 1024**2
+            + request.staging_reserve_bytes
+        )
+        report, client = self.run_preflight(
+            request=request,
+            responses={
+                **self.responses,
+                "pool.query": [dict(self.responses["pool.query"][0], free=required)],
+            },
+        )
+        self.assertEqual(report.truenas_version, self.fixture["truenas_version"])
+        self.assertFalse(report.live_write_authorized)
+        self.assertFalse(report.vm_started)
+        self.assertTrue(any("NoCloud RAW data-disk requests match reviewed exact-build schemas" in item for item in report.checks))
+        self.assertTrue(set(method for method, _ in client.calls) <= READ_ONLY_METHODS | {"system.version", "core.get_methods"})
+        self.assert_rejected(
+            request=request,
+            responses={
+                **self.responses,
+                "pool.query": [dict(self.responses["pool.query"][0], free=required - 1)],
+            },
+            contains="full disk, staging space, and requested reserve",
+        )
+
+    def test_desktop_profile_rejects_unreviewed_installer_device_contract_before_host_calls(self):
+        request = replace(
+            self.request,
+            profile="ubuntu-desktop",
+            memory_mib=6144,
+            staging_reserve_bytes=DESKTOP_STAGING_RESERVE_BYTES,
+        )
+        fixture = copy.deepcopy(self.fixture)
+        attributes = fixture["methods"]["vm.device.create"]["accepts"][0]["properties"]["attributes"]
+        attributes["oneOf"] = [
+            variant for variant in attributes["oneOf"]
+            if variant.get("properties", {}).get("dtype", {}).get("const") != "CDROM"
+        ]
+        client = self.assert_rejected(
+            request=request,
+            fixture=fixture,
+            contains="VM/display, installer CD-ROM, or NoCloud RAW-disk request shape is unsupported",
+        )
+        self.assertEqual(client.calls, [])
+
+    def test_desktop_profile_requires_reviewed_raw_seed_disk_contract_before_host_calls(self):
+        request = replace(
+            self.request,
+            profile="ubuntu-desktop",
+            memory_mib=6144,
+            staging_reserve_bytes=DESKTOP_STAGING_RESERVE_BYTES,
+        )
+        fixture = copy.deepcopy(self.fixture)
+        attributes = fixture["methods"]["vm.device.create"]["accepts"][0]["properties"]["attributes"]
+        attributes["oneOf"] = [
+            variant for variant in attributes["oneOf"]
+            if variant.get("properties", {}).get("dtype", {}).get("const") != "RAW"
+        ]
+        client = self.assert_rejected(
+            request=request,
+            fixture=fixture,
+            contains="NoCloud RAW-disk request shape is unsupported",
+        )
+        self.assertEqual(client.calls, [])
+
+    def test_desktop_profile_requires_reviewed_vm_display_enablement_before_host_calls(self):
+        request = replace(
+            self.request,
+            profile="ubuntu-desktop",
+            memory_mib=6144,
+            staging_reserve_bytes=DESKTOP_STAGING_RESERVE_BYTES,
+        )
+        fixture = copy.deepcopy(self.fixture)
+        fixture["methods"]["vm.create"]["accepts"][0]["properties"].pop("ensure_display_device")
+        client = self.assert_rejected(
+            request=request,
+            fixture=fixture,
+            contains="VM/display, installer CD-ROM, or NoCloud RAW-disk request shape is unsupported",
+        )
+        self.assertEqual(client.calls, [])
+
+    def test_rejects_invalid_profile_specific_staging_budget_before_host_calls(self):
+        for value in (True, 0, -1, 2**63):
+            with self.subTest(value=value):
+                client = self.assert_rejected(
+                    request=replace(self.request, staging_reserve_bytes=value),
+                    contains="staging reserve",
+                )
+                self.assertEqual(client.calls, [])
 
     def test_rejects_invalid_or_boot_pool_input_before_host_calls(self):
         for pool_name in ("boot-pool", "../tank", "tank/child", ""):
@@ -175,7 +275,7 @@ class ReadOnlyPreflightTests(unittest.TestCase):
         required = (
             self.request.disk_gib * 1024**3
             + self.request.pool_reserve_mib * 1024**2
-            + STAGING_RESERVE_BYTES
+            + self.request.staging_reserve_bytes
         )
         self.assert_rejected(
             responses={**self.responses, "pool.query": [
@@ -205,6 +305,27 @@ class ReadOnlyPreflightTests(unittest.TestCase):
             responses={**self.responses, "vm.device.query": [{"id": 22, "vm": 3, "attributes": {"path": path}}]},
             contains="already references the intended zvol",
         )
+
+    def test_desktop_profile_rejects_existing_seed_or_iso_path_references(self):
+        request = replace(
+            self.request,
+            profile="ubuntu-desktop",
+            memory_mib=6144,
+            staging_reserve_bytes=DESKTOP_STAGING_RESERVE_BYTES,
+        )
+        for path, kind in (
+            ("/mnt/tank/linux-vms/linuxtest/cidata.img", "NoCloud seed image"),
+            ("/mnt/tank/linux-vms/linuxtest/ubuntu-installer.iso", "installer ISO"),
+        ):
+            with self.subTest(path=path):
+                client = self.assert_rejected(
+                    request=request,
+                    responses={**self.responses, "vm.device.query": [
+                        {"id": 22, "vm": 3, "attributes": {"path": path}},
+                    ]},
+                    contains=f"already references the intended {kind} path",
+                )
+                self.assertIn("vm.device.query", [method for method, _ in client.calls])
 
     def test_rejects_malformed_device_query_rows(self):
         self.assert_rejected(
@@ -281,6 +402,36 @@ class ReadOnlyPreflightCLITests(unittest.TestCase):
              mock.patch.object(cli, "run_read_only_preflight", return_value=report), \
              contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(cli.main(args), 0)
+        client_factory.assert_called_once_with(timeout=120, expected_version=fixture["truenas_version"])
+
+    def test_cli_selects_desktop_staging_budget_without_touching_host(self):
+        from planning import check_readonly_preflight as cli
+        from planning.readonly_preflight import ReadOnlyPreflightReport
+
+        fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        report = ReadOnlyPreflightReport(
+            truenas_version=fixture["truenas_version"],
+            checked_method_contracts=fixture["method_count"],
+            vm_name="desktopvm01",
+            pool_name="testpool",
+            bridge_name="brtest",
+            checks=(),
+        )
+        captured = []
+        args = [
+            "--profile", "ubuntu-desktop", "--vm-name", "desktopvm01",
+            "--pool", "testpool", "--bridge", "brtest", "--vcpus", "4",
+            "--memory-mib", "8192", "--disk-gib", "64",
+            "--host-reserve-mib", "16384", "--pool-reserve-mib", "102400",
+        ]
+        with mock.patch.object(cli, "load_fixture", return_value=fixture), \
+             mock.patch.object(cli, "MidcltClient") as client_factory, \
+             mock.patch.object(cli, "run_read_only_preflight", side_effect=lambda client, selected_fixture, request: captured.append(request) or report), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(args), 0)
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].profile, "ubuntu-desktop")
+        self.assertEqual(captured[0].staging_reserve_bytes, DESKTOP_STAGING_RESERVE_BYTES)
         client_factory.assert_called_once_with(timeout=120, expected_version=fixture["truenas_version"])
 
 
