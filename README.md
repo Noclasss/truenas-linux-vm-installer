@@ -129,6 +129,13 @@ tests and limitations. Preview success does not establish live compatibility.
 
 The [console-only test VM runbook](docs/operator-console-test-disk-attach.md) contains separate guarded TrueNAS Shell steps to attach the disposable zvol and request a no-overcommit VM start. The [NoCloud seed and console-login runbook](docs/operator-nocloud-seed-test.md) is documentation only: it requires a trusted pre-existing transfer route, leaves the VM without a NIC, and tests seed pickup on an already-booted guest—not pristine first boot. No seed was created, transferred, or attached. Neither runbook is installer functionality or evidence of guest provisioning. The console boot result is documented in [operator console boot evidence](docs/operator-console-boot-evidence.md).
 
+## Smoke testing and Jarvis handoff
+
+Use the [Jarvis smoke-test handoff](docs/jarvis-smoke-tests.md) for an exact-commit
+local run with private logs and a JSON result. The runner tests offline previews,
+seed media and fake ownership/recovery; it never creates TrueNAS resources.
+Actual ISO verification and read-only host preflight are separate evidence stages.
+
 ## Development
 
 Implementation work belongs on a feature branch and should be reviewed in an unmerged pull request. Do not treat the project as usable until installer code, tests, and supported-version documentation are published and reviewed.
