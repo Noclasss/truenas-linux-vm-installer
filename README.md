@@ -30,7 +30,12 @@ request shapes; these are **not proof of live TrueNAS write compatibility**.
 
 Offline deployment development now includes a **fake-backend-only** sequencing
 rehearsal with an exact `CREATE` gate, collision checks, basic read-back checks,
-and explicit partial-failure refusal. It cannot connect to TrueNAS or create a VM.
+and explicit partial-failure refusal. The fake preflight checks pool, bridge,
+conflicts, virtualization, CPU and memory; filesystem parents are modeled before
+the zvol. Proposed writes are checked against the reviewed Beta.2 schema.
+A private atomic ownership manifest and read-only recovery report now model
+interrupted operations and lost responses. Recovery cannot continue or delete
+resources. These components cannot connect to TrueNAS or create a real VM.
 The offline preview also reserves the pinned Desktop ISO and seed-media size in
 addition to the requested virtual disk, and desktop autoinstall now accepts the
 same VM-name formats as the planner while deriving valid guest hostnames.
@@ -43,6 +48,18 @@ Recent merges:
   include Desktop artifact/seed staging bytes in offline pool capacity (CI passed).
 - [#32](https://github.com/Noclasss/truenas-linux-vm-installer/pull/32) —
   align Desktop autoinstall naming with planner names (CI passed).
+
+- [#34](https://github.com/Noclasss/truenas-linux-vm-installer/pull/34) —
+  enforce fake preflight and filesystem-parent ordering.
+- [#35](https://github.com/Noclasss/truenas-linux-vm-installer/pull/35) —
+  validate proposed Desktop writes against the exact reviewed schema.
+- [#36](https://github.com/Noclasss/truenas-linux-vm-installer/pull/36) —
+  persist mock ownership and report recovery state without continuing or deleting.
+
+The post-merge [planner run 43961915844](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/43961915844)
+passed unit tests, compilation, preview examples, and whitespace checks at
+`89c2cd29d8c7d0de4d1e890cb41872b4388c1a3d` on 2026-11-16.
+These checks establish offline behavior only.
 
 **Release blockers remain:** independently verify the Canonical checksum manifest
 signature; inspect the exact ISO's `casper/install-sources.yaml` to confirm the
@@ -81,7 +98,7 @@ A separate operator-run console-only test later converted the pinned Ubuntu Serv
 - The earlier 19-method count describes the initial fixture; the operator's exact-build comparison matched all 20 contracts on `TrueNAS-26.0.0-BETA.2`, using only `system.version` and `core.get_methods` and no write methods.
 - On 2026-10-22, PR #10 was merged into `main` at `61515c2ecbbf530e7cfe860a8e3f1c902c75c462`; its planner check and post-merge push run [39794106338](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39794106338) passed. PR #11 was then squash-merged at `9ef93d5d986545e78f67862a4ba1edc9229ffd0a`; its planner check and final push run [39795854209](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39795854209) passed. At the time of that earlier status refresh, PR #11 was the functional `main` head.
 - PR #12 refreshed status documentation at `b674695`; PR #13 added mock-only staging-path planning at `3d6522e`; PR #14 constrained staging paths to the selected pool at `d25ceda3d6e8627c7ab06145db152c25550bbef0`. The latest merge still does not add a live installer writer.
-- PR #15 (`339e137e3c237371a4d36956e6b149ecaa58583d`) documented the cleaned-up staging permission probe. PR #16 (`b5c4ab9c141d960742c554c6183ef84255ecc0a0`) clarified artifact access boundaries. PR #17 (`ebc8081aa23d4ba43071c09420e0c36c141d95b1`) refreshed status and defined the conversion-only gate; its hosted planner run [39832859709](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39832859709) passed with 150 local tests reported. PR #18 (`506c3d201073db00266439cf56802b11abbc5551`) added mock seed ISO ownership/mode reconciliation; its hosted planner run [39855166968](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39855166968) passed with 152 local tests reported. PR #19 refreshed the status documentation and was squash-merged on 2026-10-22 as `d30981cf95f114ad0a2b4f35ce04c9858e998057`; it made no installer behavior changes. PR #18 remains the latest functional change. PR #23 added the guarded console-only operator runbook and was squash-merged on 2026-10-23 as `4333501c41e9a96827bc99f5026e6981c6f884ee`; its `planner` check passed.
+- PR #15 (`339e137e3c237371a4d36956e6b149ecaa58583d`) documented the cleaned-up staging permission probe. PR #16 (`b5c4ab9c141d960742c554c6183ef84255ecc0a0`) clarified artifact access boundaries. PR #17 (`ebc8081aa23d4ba43071c09420e0c36c141d95b1`) refreshed status and defined the conversion-only gate; its hosted planner run [39832859709](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39832859709) passed with 150 local tests reported. PR #18 (`506c3d201073db00266439cf56802b11abbc5551`) added mock seed ISO ownership/mode reconciliation; its hosted planner run [39855166968](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39855166968) passed with 152 local tests reported. PR #19 refreshed the status documentation and was squash-merged on 2026-10-22 as `d30981cf95f114ad0a2b4f35ce04c9858e998057`; it made no installer behavior changes. At that historical checkpoint, PR #18 was the latest functional change. PR #23 added the guarded console-only operator runbook and was squash-merged on 2026-10-23 as `4333501c41e9a96827bc99f5026e6981c6f884ee`; its `planner` check passed.
 
 The recorded merges and offline checks do not establish installer behavior. The manual live tests establish only the narrowly described synthetic conversion and console boot; installer-flow write acceptance, seed/CDROM setup, guest provisioning/login, guest networking, and automated cleanup remain unverified. The project remains experimental, `LIVE_PROFILE_ALLOWLIST` remains empty, and all four profiles remain experimental.
 
