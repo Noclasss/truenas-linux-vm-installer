@@ -56,7 +56,12 @@ Recent merges:
 - [#36](https://github.com/Noclasss/truenas-linux-vm-installer/pull/36) —
   persist mock ownership and report recovery state without continuing or deleting.
 
-The post-merge [planner run 43961915844](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/43961915844)
+- [#38](https://github.com/Noclasss/truenas-linux-vm-installer/pull/38) —
+  verify caller-supplied ISO bytes against a signed manifest and pinned signer.
+- [#39](https://github.com/Noclasss/truenas-linux-vm-installer/pull/39) —
+  require exact fake-resource read-back before acknowledging ownership.
+
+Historical verification for PR #36: the post-merge [planner run 43961915844](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/43961915844)
 passed unit tests, compilation, preview examples, and whitespace checks at
 `89c2cd29d8c7d0de4d1e890cb41872b4388c1a3d` on 2026-11-16.
 These checks establish offline behavior only.
@@ -128,6 +133,13 @@ tests and limitations. Preview success does not establish live compatibility.
 ## Operator test runbooks
 
 The [console-only test VM runbook](docs/operator-console-test-disk-attach.md) contains separate guarded TrueNAS Shell steps to attach the disposable zvol and request a no-overcommit VM start. The [NoCloud seed and console-login runbook](docs/operator-nocloud-seed-test.md) is documentation only: it requires a trusted pre-existing transfer route, leaves the VM without a NIC, and tests seed pickup on an already-booted guest—not pristine first boot. No seed was created, transferred, or attached. Neither runbook is installer functionality or evidence of guest provisioning. The console boot result is documented in [operator console boot evidence](docs/operator-console-boot-evidence.md).
+
+## Smoke testing and Jarvis handoff
+
+Use the [Jarvis smoke-test handoff](docs/jarvis-smoke-tests.md) for an exact-commit
+local run with private logs and a JSON result. The runner tests offline previews,
+seed media and fake ownership/recovery; it never creates TrueNAS resources.
+Actual ISO verification and read-only host preflight are separate evidence stages.
 
 ## Development
 

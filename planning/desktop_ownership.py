@@ -329,6 +329,42 @@ def inspect_recovery(manifest_path: Path, backend: PersistentFakeBackend) -> Rec
         or type(data["inventory_before"].get("shared_parent_exists")) is not bool
     ):
         raise OwnershipError("manifest identity or resource plan does not match the original request")
+    expected = []
+    if not data["inventory_before"]["shared_parent_exists"]:
+        expected.append(("dataset", shared_parent))
+    expected.extend((("dataset", vm_dataset), ("zvol", zvol), ("vm", vm_name)))
+    expected.extend(("device", f"{vm_name}:{kind}")
+                    for kind in ("disk", "installer", "seed", "nic", "display"))
+    recorded = []
+    for row in data["resources"]:
+        if not isinstance(row, dict):
+            raise OwnershipError("manifest contains malformed ownership data")
+        recorded.append((row.get("kind"), row.get("identifier")))
+    if recorded != expected[:len(recorded)]:
+        raise OwnershipError("manifest acknowledgements are not an exact prefix of the resource plan")
+    pending = data.get("pending")
+    if pending is not None:
+        if (not isinstance(pending, dict)
+                or len(recorded) >= len(expected)
+                or (pending.get("kind"), pending.get("identifier")) != expected[len(recorded)]
+                or pending.get("state") != "intent_recorded"):
+            raise OwnershipError("manifest pending operation does not match the next planned resource")
+    if data["status"] == "mock_complete_not_installed":
+        if recorded != expected or pending is not None:
+            raise OwnershipError("complete manifest is missing acknowledgements or has a pending operation")
+    vm_rows = [row for row in data["resources"] if row["kind"] == "vm"]
+    expected_vm_id = vm_rows[0].get("api_id") if vm_rows else None
+    if (data.get("vm_id") != expected_vm_id
+            or (expected_vm_id is not None and (type(expected_vm_id) is not int
+                                            or type(data.get("vm_id")) is not int))):
+        raise OwnershipError("manifest VM summary disagrees with acknowledged resources")
+    expected_devices = [
+        {"kind": row["identifier"].rsplit(":", 1)[-1], "id": row.get("api_id"),
+         "vm_id": expected_vm_id, "attributes": row.get("attributes")}
+        for row in data["resources"] if row["kind"] == "device"
+    ]
+    if data.get("devices") != expected_devices:
+        raise OwnershipError("manifest device summary disagrees with acknowledged resources")
     inventory = backend.inventory()
     observed: dict[str, bool] = {}
     attention: list[str] = []

@@ -248,11 +248,56 @@ class DesktopOwnershipTests(unittest.TestCase):
                     target = REQUEST.name
                     next(row for row in data["resources"] if row["kind"] == "vm")["api_id"] = True
                 path.write_text(json.dumps(data), encoding="utf-8")
-                report = inspect_recovery(path, backend)
-                row = next(row for row in report.resources if row["identifier"] == target)
-                self.assertFalse(row["owned"])
-                self.assertFalse(row["verified"])
-                self.assertTrue(report.attention)
+                with self.assertRaises(OwnershipError):
+                    inspect_recovery(path, backend)
+
+
+
+    def test_complete_manifest_requires_every_acknowledgement_and_consistent_summaries(self):
+        for fault in ("empty", "missing_last", "duplicate", "reordered", "pending",
+                      "vm_summary", "device_summary"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                backend = PersistentFakeBackend()
+                path = self.path(directory)
+                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+                data = json.loads(path.read_text())
+                if fault == "empty":
+                    data["resources"] = []
+                    data["vm_id"] = None
+                    data["devices"] = []
+                elif fault == "missing_last":
+                    data["resources"].pop()
+                    data["devices"].pop()
+                elif fault == "duplicate":
+                    data["resources"].append(data["resources"][-1])
+                elif fault == "reordered":
+                    data["resources"][0], data["resources"][1] = data["resources"][1], data["resources"][0]
+                elif fault == "pending":
+                    data["pending"] = {"kind": "vm", "identifier": REQUEST.name,
+                                       "state": "intent_recorded"}
+                elif fault == "vm_summary":
+                    data["vm_id"] = 999
+                else:
+                    data["devices"][0]["vm_id"] = 999
+                path.write_text(json.dumps(data), encoding="utf-8")
+                before = backend.inventory()
+                operations = list(backend.operations)
+                with self.assertRaises(OwnershipError):
+                    inspect_recovery(path, backend)
+                self.assertEqual(backend.inventory(), before)
+                self.assertEqual(backend.operations, operations)
+
+    def test_partial_manifest_rejects_pending_operation_outside_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            backend = PersistentFakeBackend(fail_before=OPERATIONS[0])
+            path = self.path(directory)
+            with self.assertRaises(OwnershipError):
+                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+            data = json.loads(path.read_text())
+            data["pending"]["identifier"] = "testpool/unrelated"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaises(OwnershipError):
+                inspect_recovery(path, backend)
 
 
 if __name__ == "__main__":
