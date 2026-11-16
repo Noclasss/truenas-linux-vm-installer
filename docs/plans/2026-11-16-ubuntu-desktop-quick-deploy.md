@@ -95,6 +95,14 @@
 
 ## Current work state
 
+- The [Jarvis smoke handoff](../jarvis-smoke-tests.md) now provides an exact-commit
+  command, private logs and machine-readable results. CI runs the command end to
+  end. Skipped tests or missing real crypto coverage cannot produce a full pass.
+- Recovery now requires complete, ordered acknowledgements for a completed
+  manifest, a pending operation matching the next planned resource, and VM/device
+  summaries consistent with those acknowledgements. Missing records cannot be
+  treated as successful recovery.
+
 - Persistent mock ownership/recovery is merged in PR #36. PR #38 adds a local
   signed-manifest and ISO-byte verifier with 235 hosted tests passing, including
   a real signature round trip using a disposable test key. It does not establish

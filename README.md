@@ -56,7 +56,12 @@ Recent merges:
 - [#36](https://github.com/Noclasss/truenas-linux-vm-installer/pull/36) —
   persist mock ownership and report recovery state without continuing or deleting.
 
-The post-merge [planner run 43961915844](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/43961915844)
+- [#38](https://github.com/Noclasss/truenas-linux-vm-installer/pull/38) —
+  verify caller-supplied ISO bytes against a signed manifest and pinned signer.
+- [#39](https://github.com/Noclasss/truenas-linux-vm-installer/pull/39) —
+  require exact fake-resource read-back before acknowledging ownership.
+
+Historical verification for PR #36: the post-merge [planner run 43961915844](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/43961915844)
 passed unit tests, compilation, preview examples, and whitespace checks at
 `89c2cd29d8c7d0de4d1e890cb41872b4388c1a3d` on 2026-11-16.
 These checks establish offline behavior only.

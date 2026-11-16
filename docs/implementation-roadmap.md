@@ -2,8 +2,8 @@
 
 **Current state (2026-11-16):** an experimental offline planner, reusable safety
 helpers, Ubuntu Server artifact/NoCloud preparation, and Server/Desktop mock
-orchestration. The latest functional merge is PR #36 at
-`89c2cd29d8c7d0de4d1e890cb41872b4388c1a3d`. No live installer writer is released.
+orchestration. PRs #38 and #39 add local signed-ISO verification tooling and exact
+fake-resource read-back. No live installer writer is released.
 
 Desktop work previously described here as unpublished is now merged: offline
 autoinstall/password-hash/VFAT helpers, staging-capacity guards, planner-compatible
@@ -12,7 +12,13 @@ Beta.2 write-intent schema validation (#35), and private atomic mock ownership
 manifests with read-only recovery reports (#36). Recovery cannot continue or
 delete resources; simulated inventory and schema matches do not prove live writes.
 
-**Verification:** the post-merge [planner run 43961915844](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/43961915844)
+**Jarvis smoke preparation:** [PR #40](https://github.com/Noclasss/truenas-linux-vm-installer/pull/40)
+adds an exact-commit offline smoke command, private evidence reports, CI coverage
+of that command, and refusal of incomplete or inconsistent recovery manifests.
+See the [Jarvis handoff](jarvis-smoke-tests.md). The handoff separates offline
+checks, actual ISO verification and optional read-only host preflight.
+
+**Historical verification for PR #36:** the post-merge [planner run 43961915844](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/43961915844)
 passed unit tests, compilation, preview examples, and whitespace checks on that
 exact commit. No local tests were rerun during this documentation refresh.
 
