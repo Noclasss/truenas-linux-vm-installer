@@ -128,6 +128,7 @@ class FakeBackend:
         maximum_vcpus=8,
         available_memory_mib=32768,
         pool_reserve_bytes=_POOL_RESERVE_BYTES,
+        contract_fixture=None,
     ):
         self.resources = {"vm": set(), "disk": set()}
         self.datasets = dict(datasets or {})
@@ -143,6 +144,8 @@ class FakeBackend:
         self.maximum_vcpus = maximum_vcpus
         self.available_memory_mib = available_memory_mib
         self.pool_reserve_bytes = pool_reserve_bytes
+        self.contract_fixture = contract_fixture
+        self.write_intents = ()
 
     def _record(self, action):
         if action == self.fail_at:
@@ -199,6 +202,32 @@ class FakeBackend:
             }, inventory)
         except ValueError as exc:
             raise DeploymentRefused(f"offline planner rejected the mock request: {exc}") from exc
+
+        # Fail closed on every proposed write shape before CREATE. This is
+        # an offline fixture check, not runtime method validation or execution.
+        if __package__:
+            from .desktop_write_contracts import (
+                DesktopWriteContractError, build_desktop_write_intents,
+                load_reviewed_desktop_fixture,
+            )
+        else:
+            from desktop_write_contracts import (
+                DesktopWriteContractError, build_desktop_write_intents,
+                load_reviewed_desktop_fixture,
+            )
+        try:
+            fixture = (
+                self.contract_fixture if self.contract_fixture is not None
+                else load_reviewed_desktop_fixture()
+            )
+            self.write_intents = build_desktop_write_intents(
+                request, fixture, vm_id=1,
+                shared_parent_exists=f"{request.pool}/linux-vms" in self.datasets,
+            )
+        except DesktopWriteContractError as exc:
+            raise DeploymentRefused(
+                f"offline fixture rejected proposed Desktop writes: {exc}"
+            ) from exc
 
     def exists(self, kind, name):
         if kind == "dataset":
