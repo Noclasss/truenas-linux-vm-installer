@@ -116,7 +116,7 @@ def _validate_desktop_request_shapes(methods: dict[str, Any], request: ReadOnlyP
     samples = (
         ("vm.create", [{
             "name": request.vm_name,
-            "vcpus": request.vcpus,
+            "vcpus": 1,
             "cores": request.vcpus,
             "threads": 1,
             "memory": request.memory_mib,
