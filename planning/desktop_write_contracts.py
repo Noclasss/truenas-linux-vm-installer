@@ -103,7 +103,7 @@ def build_desktop_write_intents(
             "create_ancestors": False,
         }]),
         ("vm.create", [{
-            "name": name, "vcpus": request.vcpus, "cores": request.vcpus,
+            "name": name, "vcpus": 1, "cores": request.vcpus,
             "threads": 1, "memory": request.memory_mib, "bootloader": "UEFI",
             "enable_secure_boot": False, "autostart": False,
             "ensure_display_device": True,
