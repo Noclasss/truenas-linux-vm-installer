@@ -245,6 +245,13 @@ def build_plan(config, inventory=None):
     parent = f"{config['pool']}/linux-vms"
     dataset = f"{parent}/{config['name']}"
     disk_bytes = config["disk_gib"] * 1024**3
+    # The Desktop installer ISO and NoCloud seed are staged on the selected
+    # pool. Include their pinned byte reserve even in the offline preview.
+    staging_reserve_bytes = (
+        desktop_artifact_metadata()["staging_reserve_bytes"]
+        if config["profile"] == "ubuntu-desktop" else 0
+    )
+    minimum_required_free_bytes = disk_bytes + staging_reserve_bytes
     if config["profile"] == "ubuntu-server":
         warnings = [
             "Ubuntu Server has a pinned artifact and offline NoCloud seed helper; preview does not download the image or generate seed media.",
@@ -281,8 +288,10 @@ def build_plan(config, inventory=None):
             raise ValidationError("the selected pool is absent from the supplied inventory")
         if config["bridge"] not in inventory["bridges"]:
             raise ValidationError("the selected bridge is absent from the supplied inventory")
-        if inventory["pools"][config["pool"]]["available_bytes"] < disk_bytes:
-            raise ValidationError("insufficient space for the proposed disk in the supplied inventory")
+        if inventory["pools"][config["pool"]]["available_bytes"] < minimum_required_free_bytes:
+            raise ValidationError(
+                "insufficient space for the proposed disk and artifact/seed staging in the supplied inventory"
+            )
         warnings.append("Inventory is user-supplied and may be stale or incomplete; free space does not include installation overhead.")
     plan = {
         "schema_version": 1,
@@ -296,7 +305,13 @@ def build_plan(config, inventory=None):
             "start": False,
             "autostart": False,
         },
-        "storage": {"dataset": dataset, "disk": dataset + "/disk0", "disk_bytes": disk_bytes},
+        "storage": {
+            "dataset": dataset,
+            "disk": dataset + "/disk0",
+            "disk_bytes": disk_bytes,
+            "staging_reserve_bytes": staging_reserve_bytes,
+            "minimum_required_free_bytes": minimum_required_free_bytes,
+        },
         "network": {
             "existing_bridge": config["bridge"],
             "modify_host_network": False,
