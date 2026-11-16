@@ -69,6 +69,10 @@ unattended installation, post-install poweroff, and graphical desktop login
 on a **separately authorized disposable** TrueNAS VM. Until then, the live
 profile allowlist remains empty and the tool must remain preview-only.
 
+A [local signature and ISO checker](docs/desktop-artifact-verification.md) is
+available for caller-supplied files on a trusted workstation. Its tests do not
+establish verification of the actual release ISO or enable deployment.
+
 See the [Ubuntu Desktop roadmap](docs/plans/2026-11-16-ubuntu-desktop-quick-deploy.md).
 
 ## Safety goals
