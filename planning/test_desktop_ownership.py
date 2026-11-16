@@ -164,5 +164,96 @@ class DesktopOwnershipTests(unittest.TestCase):
             self.assertFalse(any(row["owned"] for row in report.resources))
 
 
+    def test_successful_return_without_matching_inventory_stops_with_pending_intent(self):
+        from unittest.mock import patch
+        scenarios = (
+            ("create_parent", lambda path, owner: path),
+            ("create_volume", lambda path, owner: path),
+            ("create_vm_record", lambda name, disk, owner: 42),
+            ("attach", lambda name, kind, owner: 42),
+        )
+        for method, replacement in scenarios:
+            with self.subTest(method=method), tempfile.TemporaryDirectory() as directory:
+                backend = PersistentFakeBackend()
+                path = self.path(directory)
+                with patch.object(backend, method, side_effect=replacement), self.assertRaises(OwnershipError):
+                    rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+                data = json.loads(path.read_text())
+                self.assertEqual(data["status"], "reconcile_required")
+                self.assertIsNotNone(data["pending"])
+                identifier = data["pending"]["identifier"]
+                self.assertFalse(any(row["identifier"] == identifier for row in data["resources"]))
+                report = inspect_recovery(path, backend)
+                self.assertTrue(report.attention)
+                self.assertFalse(report.can_continue)
+                self.assertFalse(report.can_delete)
+
+    def test_wrong_returned_dataset_identity_refused_even_if_inventory_matches(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            backend = PersistentFakeBackend()
+            path = self.path(directory)
+            original = backend.create_parent
+            def wrong(path, owner):
+                original(path, owner)
+                return "unrelated/dataset"
+            with patch.object(backend, "create_parent", side_effect=wrong), self.assertRaises(OwnershipError):
+                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+            data = json.loads(path.read_text())
+            self.assertEqual(data["resources"], [])
+            self.assertEqual(data["pending"]["identifier"], "testpool/linux-vms")
+            self.assertEqual(len(backend.operations), 1)
+
+    def test_recovery_rejects_wrong_vm_disk_or_device_parent_or_duplicate(self):
+        for fault in ("vm_disk", "device_parent", "duplicate_device"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                backend = PersistentFakeBackend()
+                path = self.path(directory)
+                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+                vm_id = backend.vm_ids[REQUEST.name]
+                device = next(iter(backend.devices.values()))
+                if fault == "vm_disk":
+                    backend.vms[vm_id]["disk"] = "unrelated/disk"
+                elif fault == "device_parent":
+                    device["vm_id"] = 999
+                else:
+                    backend.devices[999] = {**device, "id": 999}
+                before = backend.inventory()
+                operations = list(backend.operations)
+                report = inspect_recovery(path, backend)
+                self.assertTrue(report.attention)
+                rows = [row for row in report.resources if row["kind"] == "device"
+                        and row["identifier"] == f"{REQUEST.name}:{device['kind']}"]
+                self.assertTrue(rows)
+                self.assertTrue(all(not row["owned"] and not row["verified"] for row in rows))
+                self.assertEqual(backend.inventory(), before)
+                self.assertEqual(backend.operations, operations)
+
+    def test_manifest_cannot_claim_unplanned_owned_path_or_boolean_id(self):
+        for fault in ("unplanned_dataset", "boolean_vm_id"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                backend = PersistentFakeBackend()
+                path = self.path(directory)
+                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+                data = json.loads(path.read_text())
+                if fault == "unplanned_dataset":
+                    target = "testpool/unrelated"
+                    backend.datasets[target] = "FILESYSTEM"
+                    backend.resource_owners["dataset:" + target] = data["installation_id"]
+                    data["resources"].append({
+                        "kind": "dataset", "identifier": target,
+                        "created_by_installation": True, "verified": True, "api_id": None,
+                    })
+                else:
+                    target = REQUEST.name
+                    next(row for row in data["resources"] if row["kind"] == "vm")["api_id"] = True
+                path.write_text(json.dumps(data), encoding="utf-8")
+                report = inspect_recovery(path, backend)
+                row = next(row for row in report.resources if row["identifier"] == target)
+                self.assertFalse(row["owned"])
+                self.assertFalse(row["verified"])
+                self.assertTrue(report.attention)
+
+
 if __name__ == "__main__":
     unittest.main()

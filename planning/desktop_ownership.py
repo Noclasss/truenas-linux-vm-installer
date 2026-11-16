@@ -163,6 +163,58 @@ def _save(path: Path, data: dict[str, Any], *, create=False) -> None:
         raise OwnershipError("private manifest write failed") from exc
 
 
+def _resource_matches(inventory: dict[str, Any], manifest: dict[str, Any],
+                      row: dict[str, Any]) -> bool:
+    """Check the exact planned object and its relationships, not just its name."""
+    kind, identifier = row.get("kind"), row.get("identifier")
+    if not isinstance(identifier, str):
+        return False
+    if inventory["owners"].get(f"{kind}:{identifier}") != manifest["installation_id"]:
+        return False
+    datasets = manifest["datasets"]
+    if kind == "dataset":
+        allowed = {datasets["vm_dataset"]}
+        if not manifest["inventory_before"]["shared_parent_exists"]:
+            allowed.add(datasets["shared_parent"])
+        return identifier in allowed and inventory["datasets"].get(identifier) == "FILESYSTEM"
+    if kind == "zvol":
+        return identifier == datasets["zvol"] and inventory["datasets"].get(identifier) == "VOLUME"
+    api_id = row.get("api_id")
+    if type(api_id) is not int or api_id <= 0:
+        return False
+    if kind == "vm":
+        candidates = [vm for vm in inventory["vms"].values()
+                      if vm.get("name", "").casefold() == manifest["vm_name"].casefold()]
+        return (
+            identifier == manifest["vm_name"] and len(candidates) == 1
+            and candidates[0].get("id") == api_id
+            and candidates[0].get("name") == identifier
+            and candidates[0].get("disk") == datasets["zvol"]
+        )
+    if kind == "device":
+        vm_name, separator, device_kind = identifier.rpartition(":")
+        vm_id = manifest.get("vm_id")
+        expected_attributes = {"dtype": device_kind.upper()}
+        if (
+            not separator or vm_name != manifest["vm_name"]
+            or device_kind not in {"disk", "installer", "seed", "nic", "display"}
+            or type(vm_id) is not int or vm_id <= 0
+            or row.get("attributes") != expected_attributes
+        ):
+            return False
+        vm_row = {"kind": "vm", "identifier": vm_name, "api_id": vm_id}
+        if not _resource_matches(inventory, manifest, vm_row):
+            return False
+        candidates = [device for device in inventory["devices"].values()
+                      if device.get("vm_name") == vm_name and device.get("kind") == device_kind]
+        return (
+            len(candidates) == 1 and candidates[0].get("id") == api_id
+            and candidates[0].get("vm_id") == vm_id
+            and candidates[0].get("attributes") == expected_attributes
+        )
+    return False
+
+
 def rehearse_persistent(
     request: DesktopRequest,
     backend: PersistentFakeBackend,
@@ -216,6 +268,10 @@ def rehearse_persistent(
         }
         if kind == "device":
             resource["attributes"] = {"dtype": identifier.rsplit(":", 1)[-1].upper()}
+        if kind in {"dataset", "zvol"} and result != identifier:
+            raise OwnershipError("created dataset identifier does not match the plan")
+        if not _resource_matches(backend.inventory(), manifest, resource):
+            raise OwnershipError("created resource failed exact inventory read-back")
         manifest["resources"].append(resource)
         manifest["pending"] = None
         if kind == "vm":
@@ -283,23 +339,17 @@ def inspect_recovery(manifest_path: Path, backend: PersistentFakeBackend) -> Rec
         kind, identifier = row.get("kind"), row["identifier"]
         if kind in {"dataset", "zvol"}:
             exists = identifier in inventory["datasets"]
-            expected = "VOLUME" if kind == "zvol" else "FILESYSTEM"
-            matches = exists and inventory["datasets"][identifier] == expected and inventory["owners"].get(kind + ":" + identifier) == data["installation_id"]
         elif kind == "vm":
-            matches = any(v["name"] == identifier and v["id"] == row.get("api_id") for v in inventory["vms"].values()) and inventory["owners"].get("vm:" + identifier) == data["installation_id"]
-            exists = any(v["name"].casefold() == identifier.casefold() for v in inventory["vms"].values())
+            exists = any(v["name"].casefold() == identifier.casefold()
+                         for v in inventory["vms"].values())
         elif kind == "device":
-            matches = any(
-                d["id"] == row.get("api_id")
-                and f"{d['vm_name']}:{d['kind']}" == identifier
-                and d.get("attributes") == row.get("attributes")
-                for d in inventory["devices"].values()
-            ) and inventory["owners"].get("device:" + identifier) == data["installation_id"]
-            exists = any(f"{d['vm_name']}:{d['kind']}" == identifier for d in inventory["devices"].values())
+            exists = any(f"{d['vm_name']}:{d['kind']}" == identifier
+                         for d in inventory["devices"].values())
         else:
             raise OwnershipError("manifest contains an unsupported resource type")
+        matches = _resource_matches(inventory, data, row)
         observed[identifier] = exists
-        resources.append({"kind": kind, "identifier": identifier, "exists": exists, "owned": bool(row.get("created_by_installation") and matches), "verified": matches})
+        resources.append({"kind": kind, "identifier": identifier, "exists": exists, "owned": bool(row.get("created_by_installation") is True and matches), "verified": matches})
         if not matches:
             attention.append(f"owned resource missing, changed, or identity mismatch: {kind}:{identifier}")
 

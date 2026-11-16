@@ -95,8 +95,24 @@
 
 ## Current work state
 
-- **Current branch:** `feat/desktop-persistent-ownership`, based on `main` at `caa3d1ce2b0997620aeaa29ca7afe91eec0813c4`.
-- **Implementation:** `planning/desktop_ownership.py` adds an offline-only persistent manifest with exclusive private creation and atomic mode-0600 updates. It records installation ID, VM/pool, planned datasets/zvol, VM ID, device IDs and explicit per-resource ownership. The fake inventory stores a separate synthetic owner ID; pre-existing shared datasets are reported but never claimed. Every create has before-apply and after-apply-lost-response injection; the operation intent is durable before creation. `inspect_recovery()` reconciles only against the exact fake type, is read-only, fails closed for corrupted/untrusted manifests, reports ambiguous/untracked resources, and never offers continuation or deletion.
-- **Tests added:** 9 focused cases, including before/after failure for all 9 modeled resource creations, lost responses, pre-existing shared dataset, interrupted restart refusal, corruption and unsafe permissions, duplicate VM/zvol, manifest-tampering ownership refusal, and unexplained VM. The full suite passes 222 tests; compile, tracked shell syntax, added-file security scan and diff checks pass.
-- **Not done:** no live TrueNAS changes, large downloads, or production deployment. ISO signature/source ID, exact runtime write behavior, and disposable graphical boot remain unverified. This mock-only code cannot establish real TrueNAS ownership semantics.
-- **Next:** commit and push the feature branch, open a PR, and verify exact-SHA CI. Merge only if checks/review are green and no safety gate is violated.
+- Persistent mock ownership/recovery is merged in PR #36. PR #38 adds a local
+  signed-manifest and ISO-byte verifier with 235 hosted tests passing, including
+  a real signature round trip using a disposable test key. It does not establish
+  verification of the actual Canonical ISO; see
+  [artifact verification](../desktop-artifact-verification.md).
+- Persistent rehearsal now reads the fake inventory after each creation before
+  acknowledging ownership. It verifies planned dataset identity/type, returned
+  numeric IDs, VM disk association, device parent VM, expected attributes and
+  synthetic ownership. A successful method return alone is not verification.
+  Failed read-back retains the pending operation and stops without retry/deletion.
+- Recovery applies the same exact-resource checks and refuses to claim unplanned
+  paths, boolean IDs, wrong VM disks, devices attached to another VM or duplicate
+  devices. Tests inject success-without-creation and altered inventory.
+- The current deployment and ownership flows still accept only the built-in
+  offline fake. No live writer, host changes, ISO download or graphical boot has
+  been performed by this work.
+- Next: run the local verifier on the actual pinned artifacts and inspect the
+  ISO source catalogue. Design staged-media access and a separately reviewed
+  live writer; do not replace the fake type gate with a live adapter. Validate
+  exact runtime writes, durable ownership and graphical installation on a
+  specifically selected disposable target before enabling deployment.
