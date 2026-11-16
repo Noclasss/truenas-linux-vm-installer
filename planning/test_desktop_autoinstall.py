@@ -106,9 +106,44 @@ class DesktopAutoinstallTests(unittest.TestCase):
         with self.assertRaises(DesktopAutoinstallError):
             self.build_config(password_hash="plaintext")
 
+    def test_all_valid_planner_vm_name_forms_render_safe_hostnames(self):
+        from planning.preview import build_plan
+
+        examples = (
+            "DesktopOne",
+            "desktop-with-hyphens",
+            "desktop_with_underscores",
+            "Desktop-trailing-",
+            "A" + "b" * 62,
+        )
+        for name in examples:
+            with self.subTest(name=name):
+                plan = build_plan({
+                    "profile": "ubuntu-desktop", "name": name,
+                    "pool": "tank", "bridge": "br0",
+                    "vcpus": 2, "memory_mib": 6144, "disk_gib": 32,
+                })
+                self.assertEqual(plan["vm"]["name"], name)
+                config = json.loads(self.build_config(vm_name=name).split("\n", 1)[1])
+                hostname = config["autoinstall"]["identity"]["hostname"]
+                meta = json.loads(build_desktop_meta_data(name))
+                self.assertEqual(hostname, meta["local-hostname"])
+                self.assertLessEqual(len(hostname), 63)
+                self.assertRegex(hostname, r"^[a-z][a-z0-9-]*[a-z0-9]$")
+                self.assertNotIn("_", hostname)
+
+    def test_punctuation_normalization_keeps_hostnames_distinct(self):
+        dash = json.loads(build_desktop_meta_data("desktop-test"))["local-hostname"]
+        underscore = json.loads(build_desktop_meta_data("desktop_test"))["local-hostname"]
+        self.assertNotEqual(dash, underscore)
+
+    def test_ordinary_short_name_preserves_existing_hostname(self):
+        data = json.loads(self.build_config(vm_name="UbuntuDesk01").split("\n", 1)[1])
+        self.assertEqual(data["autoinstall"]["identity"]["hostname"], "ubuntu-ubuntudesk01")
+
     def test_rejects_unsafe_identity_inputs(self):
         for overrides in (
-            {"vm_name": "bad-name"},
+            {"vm_name": "bad/name"},
             {"username": "DesktopUser"},
             {"realname": "  "},
             {"realname": "bad\nname"},

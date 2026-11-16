@@ -22,7 +22,7 @@ else:
 SOURCE_ID_CANDIDATES = frozenset({"ubuntu-desktop-minimal", "ubuntu-desktop"})
 SOURCE_ID_EVIDENCE = "current Canonical autoinstall docs; exact ISO not yet inspected"
 
-_VM_NAME = re.compile(r"[A-Za-z][A-Za-z0-9]{0,29}\Z")
+_VM_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,62}\Z")
 _USERNAME = re.compile(r"[a-z_][a-z0-9_-]{0,31}\Z")
 _SOURCE_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
 _LOCALE = re.compile(r"[A-Za-z0-9_.@-]{2,32}\Z")
@@ -86,6 +86,20 @@ def hash_desktop_password(
     return validate_sha512_crypt_hash(output.strip())
 
 
+def _desktop_hostname(vm_name: str) -> str:
+    """Derive an RFC 1123 hostname for every VM name accepted by preview.
+
+    Preserve ordinary short names. Add a stable suffix when sanitizing
+    underscores/trailing hyphens or truncating, avoiding avoidable collisions.
+    """
+    normalized = vm_name.lower()
+    if re.fullmatch(r"[a-z][a-z0-9-]{0,55}", normalized) and normalized[-1].isalnum():
+        return f"ubuntu-{normalized}"
+    slug = normalized.replace("_", "-").rstrip("-")
+    suffix = hashlib.sha256(normalized.encode("ascii")).hexdigest()[:8]
+    return f"ubuntu-{slug[:47].rstrip('-')}-{suffix}"
+
+
 def build_desktop_autoinstall_user_data(
     *,
     vm_name: str,
@@ -99,7 +113,7 @@ def build_desktop_autoinstall_user_data(
 ) -> str:
     """Render private cloud-config user-data for Subiquity Desktop autoinstall."""
     if not isinstance(vm_name, str) or not _VM_NAME.fullmatch(vm_name):
-        raise DesktopAutoinstallError("VM name must use ASCII letters and digits and start with a letter")
+        raise DesktopAutoinstallError("VM name must use 1–63 ASCII letters, digits, hyphens or underscores and start with a letter")
     realname = _validate_plain_text(realname, "display name", 80)
     if not isinstance(username, str) or not _USERNAME.fullmatch(username):
         raise DesktopAutoinstallError("Linux username must use lowercase letters, digits, underscores, or hyphens")
@@ -117,7 +131,7 @@ def build_desktop_autoinstall_user_data(
         raise DesktopAutoinstallError("timezone must name a known IANA time zone") from exc
 
     password_hash = validate_sha512_crypt_hash(password_hash)
-    hostname = f"ubuntu-{vm_name.lower()}"
+    hostname = _desktop_hostname(vm_name)
     autoinstall = {
         "version": 1,
         "interactive-sections": [],
@@ -141,11 +155,11 @@ def build_desktop_autoinstall_user_data(
 def build_desktop_meta_data(vm_name: str) -> str:
     """Build deterministic local NoCloud metadata for a validated desktop VM name."""
     if not isinstance(vm_name, str) or not _VM_NAME.fullmatch(vm_name):
-        raise DesktopAutoinstallError("VM name must use ASCII letters and digits and start with a letter")
+        raise DesktopAutoinstallError("VM name must use 1–63 ASCII letters, digits, hyphens or underscores and start with a letter")
     normalized = vm_name.lower()
     instance_id = "truenas-ubuntu-desktop-" + hashlib.sha256(vm_name.casefold().encode("ascii")).hexdigest()[:32]
     return json.dumps(
-        {"dsmode": "local", "instance-id": instance_id, "local-hostname": f"ubuntu-{normalized}"},
+        {"dsmode": "local", "instance-id": instance_id, "local-hostname": _desktop_hostname(vm_name)},
         sort_keys=True,
         separators=(",", ":"),
     ) + "\n"
