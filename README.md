@@ -21,7 +21,38 @@ All profiles are experimental until each has passed automated tests and disposab
 
 ## Ubuntu Desktop quick-deploy (work in progress)
 
-The first desktop candidate is the official Ubuntu 26.04.1 Desktop ISO with Subiquity autoinstall over NoCloud. The local feature branch now includes offline JSON autoinstall generation, SHA-512 crypt hashing through OpenSSL stdin, and a private 2 MiB CIDATA VFAT seed-disk builder; read-only preflight also checks the fixture-backed CD-ROM, raw seed-disk, and display request shapes. These helpers do not create a VM. The checksum signature has not been independently verified, the exact ISO source ID is not confirmed, and no installer boot, desktop login, or live writer has been tested. A pasteable deploy command is not available yet. See the [roadmap](docs/plans/2026-11-16-ubuntu-desktop-quick-deploy.md).
+**No production one-line VM deployment command is available.** The Ubuntu Desktop
+candidate uses the pinned Ubuntu 26.04.1 Desktop ISO and Subiquity autoinstall via
+NoCloud. The current `main` branch provides offline JSON autoinstall rendering,
+password hashing through OpenSSL stdin, and private CIDATA VFAT seed-media creation.
+The desktop preflight checks reviewed fixture-backed CD-ROM, RAW seed, and display
+request shapes; these are **not proof of live TrueNAS write compatibility**.
+
+Offline deployment development now includes a **fake-backend-only** sequencing
+rehearsal with an exact `CREATE` gate, collision checks, basic read-back checks,
+and explicit partial-failure refusal. It cannot connect to TrueNAS or create a VM.
+The offline preview also reserves the pinned Desktop ISO and seed-media size in
+addition to the requested virtual disk, and desktop autoinstall now accepts the
+same VM-name formats as the planner while deriving valid guest hostnames.
+
+Recent merges:
+
+- [#30](https://github.com/Noclasss/truenas-linux-vm-installer/pull/30) —
+  offline-only VM sequencing and refusal tests (CI passed).
+- [#31](https://github.com/Noclasss/truenas-linux-vm-installer/pull/31) —
+  include Desktop artifact/seed staging bytes in offline pool capacity (CI passed).
+- [#32](https://github.com/Noclasss/truenas-linux-vm-installer/pull/32) —
+  align Desktop autoinstall naming with planner names (CI passed).
+
+**Release blockers remain:** independently verify the Canonical checksum manifest
+signature; inspect the exact ISO's `casper/install-sources.yaml` to confirm the
+Subiquity source ID; implement an exact-build, separately reviewed live
+middleware writer with ownership manifest and deterministic recovery; verify
+unattended installation, post-install poweroff, and graphical desktop login
+on a **separately authorized disposable** TrueNAS VM. Until then, the live
+profile allowlist remains empty and the tool must remain preview-only.
+
+See the [Ubuntu Desktop roadmap](docs/plans/2026-11-16-ubuntu-desktop-quick-deploy.md).
 
 ## Safety goals
 
