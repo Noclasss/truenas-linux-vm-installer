@@ -49,7 +49,8 @@ class DesktopWriteContractTests(unittest.TestCase):
         self.assertEqual(intents[2][1][0]["name"], "testpool/linux-vms/desktop-test/disk0")
         vm = intents[3][1][0]
         self.assertEqual(vm["memory"], 6144)
-        self.assertEqual(vm["vcpus"], 2)
+        # One socket, two cores, one thread: exactly the requested two vCPUs.
+        self.assertEqual((vm["vcpus"], vm["cores"], vm["threads"]), (1, 2, 1))
         self.assertIs(vm["autostart"], False)
         self.assertIs(vm["ensure_display_device"], True)
         self.assertEqual(
