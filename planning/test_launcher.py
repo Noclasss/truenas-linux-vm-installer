@@ -35,7 +35,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(plan["storage"]["disk_bytes"], 64 * 1024**3)
         self.assertFalse(plan["vm"]["start"])
 
-    def _run_bootstrapper(self, *, revision=None, arguments=(), fail_fetch=False):
+    def _run_bootstrapper(self, *, revision=None, arguments=(), fail_fetch=False, git_env=None):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             fake_bin = root / "bin"
@@ -55,7 +55,7 @@ class LauncherTests(unittest.TestCase):
                 "if args and args[0] == '-C': repo, args = pathlib.Path(args[1]), args[2:]\n"
                 "command = args[0] if args else ''\n"
                 "events = json.loads(pathlib.Path(os.environ['BOOTSTRAP_TRACE']).read_text()) if pathlib.Path(os.environ['BOOTSTRAP_TRACE']).exists() else []\n"
-                "event = {'command': command, 'args': args[1:], 'config': git_config}\n"
+                "event = {'command': command, 'args': args[1:], 'config': git_config, 'git_environment': {key: os.environ.get(key) for key in ('GIT_COMMON_DIR', 'GIT_TEMPLATE_DIR', 'GIT_EXEC_PATH', 'GIT_SSH_COMMAND', 'GIT_PROXY_COMMAND', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0')}}\n"
                 "if command == 'init':\n"
                 "    repo = pathlib.Path(args[-1]); repo.mkdir(parents=True)\n"
                 "    event['repo'] = str(repo)\n"
@@ -79,6 +79,8 @@ class LauncherTests(unittest.TestCase):
                 "BOOTSTRAP_TRACE": str(trace),
                 "LAUNCH_LOG": str(launch_log),
             })
+            if git_env is not None:
+                environment.update(git_env)
             if revision is not None:
                 environment["FAKE_GIT_REVISION"] = revision
             if fail_fetch:
@@ -103,7 +105,18 @@ class LauncherTests(unittest.TestCase):
         if match is None:
             self.fail("bootstrapper must pin a full commit SHA")
         pinned_commit = match.group(1)
-        result, events, launched_args, remaining_temp = self._run_bootstrapper(revision=pinned_commit)
+        result, events, launched_args, remaining_temp = self._run_bootstrapper(
+            revision=pinned_commit,
+            git_env={
+                "GIT_COMMON_DIR": "/tmp/injected-common",
+                "GIT_TEMPLATE_DIR": "/tmp/injected-template",
+                "GIT_EXEC_PATH": "/tmp/injected-exec",
+                "GIT_SSH_COMMAND": "false",
+                "GIT_PROXY_COMMAND": "false",
+                "GIT_CONFIG_KEY_0": "http.sslVerify",
+                "GIT_CONFIG_VALUE_0": "false",
+            },
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(launched_args, "--interactive --profile ubuntu-desktop")
         self.assertTrue(any(event["command"] == "remote" and event["args"] == [
@@ -113,6 +126,8 @@ class LauncherTests(unittest.TestCase):
         self.assertIn(pinned_commit, fetch_event["args"])
         self.assertIn("http.sslVerify=true", fetch_event["config"])
         self.assertIn("http.followRedirects=false", fetch_event["config"])
+        for event in events:
+            self.assertTrue(all(value is None for value in event["git_environment"].values()))
         self.assertTrue(any(event.get("temp_mode") == 0o700 for event in events))
         self.assertEqual(remaining_temp, [])
         self.assertIn("preview only", result.stderr)
