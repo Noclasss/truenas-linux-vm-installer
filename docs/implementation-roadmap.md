@@ -1,9 +1,23 @@
 # Implementation Roadmap
 
-**Current state (2026-11-16):** an experimental offline planner, reusable safety
+**Current state (2026-11-17):** an experimental offline planner, reusable safety
 helpers, Ubuntu Server artifact/NoCloud preparation, and Server/Desktop mock
 orchestration. PRs #38 and #39 add local signed-ISO verification tooling and exact
 fake-resource read-back. No live installer writer is released.
+
+**Verification checkpoint (2026-11-17):** On `74040ffc679184b790d3129bc759c10f8a419d0b`,
+`./install.sh --interactive --profile ubuntu-desktop --inventory planning/examples/inventory.json`
+was exercised with a synthetic selection; it produced an offline plan for a chosen
+VM name, pool, bridge, CPU, RAM, and virtual-disk size. The focused preview suite
+passed 38 tests. These confirm the existing preview UX only; `apply_supported` is
+false, and no TrueNAS resources were changed. The exact-commit local smoke reported
+248 tests with one skip and exited 1 because required crypto verification was
+unavailable. GitHub Actions run `43971159771` reports success for that exact SHA;
+its raw logs were not available here, so the hosted test count/skip count is not
+independently confirmed. The cached Desktop ISO digest matches the pin, but its
+signature and `casper/install-sources.yaml` remain unverified: `gpgv` and ISO-reading
+tools are absent. The optional TrueNAS preflight remains partial because this runtime
+has no `midclt` and no reachable secure UI/API route. Keep live deployment disabled.
 
 Desktop work previously described here as unpublished is now merged: offline
 autoinstall/password-hash/VFAT helpers, staging-capacity guards, planner-compatible
