@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 if __package__:
+    from .desktop_autoinstall import SOURCE_ID_EVIDENCE
     from .ubuntu_server import artifact_metadata
     from .ubuntu_desktop import (
         DEFAULT_DISK_GIB, DEFAULT_MEMORY_MIB, DEFAULT_VCPUS,
@@ -14,6 +15,7 @@ if __package__:
         artifact_metadata as desktop_artifact_metadata,
     )
 else:
+    from desktop_autoinstall import SOURCE_ID_EVIDENCE
     from ubuntu_server import artifact_metadata
     from ubuntu_desktop import (
         DEFAULT_DISK_GIB, DEFAULT_MEMORY_MIB, DEFAULT_VCPUS,
@@ -261,8 +263,8 @@ def build_plan(config, inventory=None):
         ]
     elif config["profile"] == "ubuntu-desktop":
         warnings = [
-            "Ubuntu Desktop ISO metadata is a candidate pin; the detached signature has not been independently verified.",
-            "Current Canonical docs list ubuntu-desktop and ubuntu-desktop-minimal, but the exact ISO source ID must be confirmed from casper/install-sources.yaml.",
+            "The pinned Desktop ISO signature and bytes were verified locally on 2026-11-17; a future writer must reverify the bytes it stages.",
+            "The verified ISO catalogue lists ubuntu-desktop-minimal (default) and ubuntu-desktop; this preview leaves the source ID unset and does not validate guest behavior.",
             "Ubuntu 26.04 release notes specify 6 GiB RAM and 25 GiB storage minimums; a 2-vCPU request does not guarantee a 2 GHz host core or usable graphical performance.",
             "Offline autoinstall and private VFAT NoCloud seed builders exist; this preview does not create seed media or invoke OpenSSL.",
             "This offline preview did not query TrueNAS; Desktop request checks are fixture-backed only and have not been run against a live host.",
@@ -352,8 +354,8 @@ def build_plan(config, inventory=None):
                 "seed_media_builder": "dependency-free Python; mode-0600 output",
                 "credential_handling": "local prompt candidate; OpenSSL SHA-512 crypt via stdin; hash remains sensitive",
                 "desktop_source_id": None,
-                "source_id_status": "must be inspected in casper/install-sources.yaml from this exact ISO",
-                "configuration_status": "offline JSON autoinstall and seed-media builders implemented; exact ISO source ID and guest behavior unverified",
+                "source_id_status": f"{SOURCE_ID_EVIDENCE}; preview leaves selection unset",
+                "configuration_status": "offline JSON autoinstall and seed-media builders implemented; catalogue IDs verified, but guest behavior remains untested",
                 "post_install_power_state": "autoinstall requests poweroff; live orchestration is not implemented",
             },
         }

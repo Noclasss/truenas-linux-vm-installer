@@ -1,8 +1,8 @@
 """Offline Ubuntu Desktop autoinstall payload and credential helpers.
 
-This module creates no files and performs no TrueNAS operations. Source IDs are
-current Canonical documentation candidates; production callers must confirm the
-selected ID in the exact verified ISO before enabling installation.
+This module creates no files and performs no TrueNAS operations. The candidate
+source IDs were confirmed in the verified 26.04.1 ISO catalogue; this does not
+validate autoinstall behavior or enable live installation.
 """
 from __future__ import annotations
 
@@ -20,7 +20,12 @@ else:
     from nocloud_vfat import write_nocloud_vfat_image
 
 SOURCE_ID_CANDIDATES = frozenset({"ubuntu-desktop-minimal", "ubuntu-desktop"})
-SOURCE_ID_EVIDENCE = "current Canonical autoinstall docs; exact ISO not yet inspected"
+SOURCE_ID_EVIDENCE = (
+    "casper/install-sources.yaml from Ubuntu 26.04.1 Desktop ISO "
+    "SHA-256 601e30fbf5d97759367c632e2c33630665039b7e2158fd068403da3ccf1bda1f "
+    "(verified 2026-11-17): ubuntu-desktop-minimal is default; "
+    "ubuntu-desktop is also present"
+)
 
 _VM_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,62}\Z")
 _USERNAME = re.compile(r"[a-z_][a-z0-9_-]{0,31}\Z")
