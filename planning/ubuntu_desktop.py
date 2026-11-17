@@ -51,9 +51,12 @@ def artifact_metadata() -> dict[str, object]:
         "checksum_signature_url": CHECKSUM_SIGNATURE_URL,
         "signing_key_fingerprint": SIGNING_KEY_FINGERPRINT,
         "integrity_status": (
-            "SHA-256 and size are pinned from Canonical HTTPS metadata; "
-            "detached signature not independently verified in this environment"
+            "Pinned SHA256SUMS signature and exact-size ISO bytes were verified "
+            "locally on 2026-11-17; any future staged bytes must be reverified."
         ),
         "image_format": "iso",
-        "image_format_status": "official Desktop installer ISO; downloaded bytes not yet inspected",
+        "image_format_status": (
+            "Pinned Desktop ISO verified; its casper/install-sources.yaml was "
+            "inspected separately; installation and guest boot remain untested."
+        ),
     }

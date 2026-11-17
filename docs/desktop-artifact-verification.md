@@ -35,13 +35,32 @@ fingerprint and checksum-manifest digest. Failures exit nonzero without a succes
 report. The report always sets source_id_verified and live_install_allowed to
 false. No profile is enabled and no VM is created or started.
 
+## Recorded evidence (2026-11-17)
+
+The checked-in verifier at checkout `fd620d0e04ad9685a05d99a2b0e7a716414dfda8`
+was run against the cached pinned files using `gpgv` 2.4.7 staged in private
+scratch from signed Debian snapshot metadata; no global package installation or
+TrueNAS operation occurred. It verified:
+
+- Detached `SHA256SUMS` signature: valid, pinned signer fingerprint
+  `843938DF228D22F7B3742BC0D94AA3F0EFE21092`.
+- Manifest SHA-256: `4adde9f7e7760a624db5821ad75679a76b9cde1e0d3e9cb2117cfe7d8043fa43`.
+- ISO size: `6482409472` bytes; SHA-256:
+  `601e30fbf5d97759367c632e2c33630665039b7e2158fd068403da3ccf1bda1f`.
+- `xorriso` 1.5.6 extracted `casper/install-sources.yaml` from that ISO. It
+  lists `ubuntu-desktop-minimal` as the default source and `ubuntu-desktop` as
+  the other source. A post-extraction ISO hash still matched the pin.
+
+The verifier continues to report `source_id_verified: false` because it checks
+artifact integrity, not the catalogue; the catalogue evidence is recorded
+separately. Its `live_install_allowed` result remains false. These checks do
+not validate autoinstall behavior, VM creation, guest boot, or graphical login.
+Any future writer must verify the exact staged bytes again.
+
 ## Evidence still required
 
-Adding this checker and passing synthetic tests does **not** verify the actual
-Canonical manifest or 6.48 GB ISO. Run it against the actual pinned files before
-recording that evidence. The exact ISO's casper/install-sources.yaml still needs
-inspection, followed by reviewed live-writer integration and separately scoped
-disposable installation and graphical-login validation.
+Reviewed live-writer integration and separately authorized disposable
+installation, poweroff, and graphical-login validation remain outstanding.
 
 The offline suite includes refusal tests and a real cryptographic round trip
 using a generated disposable test key if GnuPG tools are already present. That

@@ -175,7 +175,7 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(bootstrap["provisioning"]["device_type"], "CDROM")
         self.assertIn("schema-only", bootstrap["provisioning"]["device_evidence"])
 
-    def test_ubuntu_desktop_preview_has_only_unverified_candidate_metadata(self):
+    def test_ubuntu_desktop_preview_keeps_guest_behavior_unverified(self):
         plan = build_plan(dict(self.config, profile="ubuntu-desktop", memory_mib=6144))
         self.assertEqual(plan["mode"], "offline-preview")
         self.assertFalse(plan["apply_supported"])
@@ -189,14 +189,14 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(artifact["seed_media_size_bytes"], 2 * 1024**2)
         self.assertIn("VFAT raw disk image", artifact["seed_media_format"])
         self.assertEqual(artifact["image_format"], "iso")
-        self.assertIn("signature not independently verified", artifact["integrity_status"])
+        self.assertIn("signature and exact-size ISO bytes were verified locally", artifact["integrity_status"])
         self.assertEqual(bootstrap["provisioning"]["method"], "Subiquity autoinstall")
         self.assertEqual(bootstrap["provisioning"]["datasource"], "NoCloud")
         self.assertEqual(bootstrap["provisioning"]["seed_media"], "2 MiB FAT12/VFAT raw data disk, not a CD-ROM or ISO")
         self.assertIsNone(bootstrap["provisioning"]["desktop_source_id"])
-        self.assertIn("exact ISO", bootstrap["provisioning"]["source_id_status"])
+        self.assertIn("ubuntu-desktop-minimal is default", bootstrap["provisioning"]["source_id_status"])
         self.assertIn("builders implemented", bootstrap["provisioning"]["configuration_status"])
-        self.assertTrue(any("source ID must be confirmed" in warning for warning in plan["warnings"]))
+        self.assertTrue(any("preview leaves the source ID unset" in warning for warning in plan["warnings"]))
         self.assertTrue(any("fixture-backed only" in warning for warning in plan["warnings"]))
         self.assertFalse(plan["vm"]["start"])
         self.assertFalse(plan["vm"]["autostart"])
