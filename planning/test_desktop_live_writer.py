@@ -492,6 +492,40 @@ class DesktopLiveWriterTests(unittest.TestCase):
                 self.assertEqual(len(client.devices), 1)
                 self.assertEqual(manifest["status"], "reconcile_required")
 
+    def test_returned_ids_are_durable_before_response_validation_and_stop(self):
+        for method in ("vm.create", "vm.device.create"):
+            with self.subTest(method=method), tempfile.TemporaryDirectory() as directory:
+                writer, client, mountpoint = self.writer(directory)
+                original_call = client.call
+
+                def malformed_response(call_method, params=None):
+                    result = original_call(call_method, params)
+                    if call_method != method or not isinstance(result, dict):
+                        return result
+                    if method == "vm.create":
+                        return {**result, "name": "UnexpectedVM"}
+                    vm_id = result.get("vm")
+                    if type(vm_id) is int:
+                        return {**result, "vm": vm_id + 1000}
+                    return result
+
+                with patch.object(writer, "_require_root", return_value=None), \
+                     patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint), \
+                     patch.object(client, "call", side_effect=malformed_response), \
+                     self.assertRaises(DesktopWriterError):
+                    writer.create(confirmation=self.confirmation(writer))
+                manifest = json.loads((Path(directory) / "operation.json").read_text())
+                self.assertEqual(manifest["status"], "reconcile_required")
+                self.assertEqual(manifest["pending"]["state"], "ambiguous")
+                self.assertEqual(len(client.writes), 4 if method == "vm.create" else 5)
+                self.assertEqual(client.writes[-1][0], method)
+                self.assertEqual(manifest["pending"]["api_id"], 41 if method == "vm.create" else 91)
+                if method == "vm.device.create":
+                    self.assertEqual(manifest["pending"]["vm_id"], 41)
+                    self.assertEqual(len(client.devices), 1)
+                else:
+                    self.assertIn(41, client.vms)
+
     def test_preflight_request_refuses_unselected_network_and_settings_are_explicit(self):
         with tempfile.TemporaryDirectory() as directory:
             writer, client, _ = self.writer(directory)
