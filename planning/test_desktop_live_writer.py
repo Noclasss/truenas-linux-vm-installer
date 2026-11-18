@@ -74,6 +74,8 @@ class FakeMiddleware:
             return True
         if method == "vm.maximum_supported_vcpus":
             return 8
+        if method == "system.info":
+            return {"physmem": 64 * 1024**3}
         if method == "vm.get_available_memory":
             return 32 * 1024 * 1024**2
 

@@ -21,6 +21,7 @@ else:  # direct execution as ``python planning/check_readonly_preflight.py``
 READ_ONLY_METHODS = frozenset({
     "pool.query",
     "pool.dataset.query",
+    "system.info",
     "vm.query",
     "vm.device.query",
     "vm.device.nic_attach_choices",
@@ -173,6 +174,7 @@ def run_read_only_preflight(
         ("pool.query.free", "bytes"),
         ("vm.create.memory", "MiB"),
         ("vm.get_available_memory.result", "bytes"),
+        ("system.info.physmem", "bytes"),
     ):
         evidence = semantics.get(field) if isinstance(semantics, dict) else None
         if (
@@ -296,11 +298,18 @@ def run_read_only_preflight(
     if request.vcpus > maximum_vcpus:
         raise PreflightError("requested vCPU count exceeds the host-supported maximum")
 
+    system_info = _read(reader, methods, "system.info", [])
+    physical_memory_bytes = system_info.get("physmem") if isinstance(system_info, dict) else None
+    if type(physical_memory_bytes) is not int or physical_memory_bytes <= 0:
+        raise PreflightError("host returned an invalid total physical-memory byte count")
+    required_memory_bytes = (request.memory_mib + request.host_reserve_mib) * _MIB
+    if physical_memory_bytes < required_memory_bytes:
+        raise PreflightError("host physical RAM is below the VM request plus requested reserve")
+
     # The exact-build core.get_methods capture describes this return value in bytes.
     available_memory_bytes = _read(reader, methods, "vm.get_available_memory", [False])
     if type(available_memory_bytes) is not int or available_memory_bytes < 0:
         raise PreflightError("host returned an invalid available-memory value")
-    required_memory_bytes = (request.memory_mib + request.host_reserve_mib) * _MIB
     if available_memory_bytes < required_memory_bytes:
         raise PreflightError("host available memory is below the VM request plus requested reserve")
 
@@ -309,7 +318,7 @@ def run_read_only_preflight(
         "caller-selected pool health, ONLINE state, and capacity for the full disk, artifact staging, and requested reserve",
         "VM name and intended dataset paths are collision-free",
         "hardware virtualization and requested vCPU limit",
-        "available memory meets the request plus caller-selected reserve",
+        "total physical RAM and available memory meet the request plus caller-selected reserve",
     )
     if request.bridge_name is None:
         checks += ("no VM NIC requested; no host-network attachment is changed",)
