@@ -412,6 +412,15 @@ class DesktopCreateOnlyWriter:
             }
             save()
 
+        def record_returned_id(api_id: int, vm_id: int | None = None) -> None:
+            pending_record = manifest.get("pending")
+            if not isinstance(pending_record, dict):
+                raise DesktopWriterError("successful write response has no durable pending intent")
+            pending_record["api_id"] = api_id
+            if vm_id is not None:
+                pending_record["vm_id"] = vm_id
+            save()
+
         def stop_ambiguous(message: str, exc: Exception | None = None) -> NoReturn:
             manifest["status"] = "reconcile_required"
             manifest["failure"] = message
@@ -559,6 +568,8 @@ class DesktopCreateOnlyWriter:
         vm_result = None
         try:
             vm_result = checked.call_write("vm.create", [vm_payload])
+            if isinstance(vm_result, dict) and type(vm_result.get("id")) is int and vm_result["id"] > 0:
+                record_returned_id(vm_result["id"])
             _validate_write_result(methods, "vm.create", vm_result)
             if (
                 not isinstance(vm_result, dict)
@@ -682,6 +693,8 @@ class DesktopCreateOnlyWriter:
                 }]
                 pending("vm.device.create", f"{self.request.vm_name}:{label}", recorded_params)
                 result = checked.call_write("vm.device.create", params)
+                if isinstance(result, dict) and type(result.get("id")) is int and result["id"] > 0:
+                    record_returned_id(result["id"], vm_id)
                 _validate_write_result(methods, "vm.device.create", result)
                 if (
                     not isinstance(result, dict)

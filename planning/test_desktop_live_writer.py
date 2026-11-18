@@ -24,12 +24,16 @@ _TEST_DISPLAY_PASSWORD = "SYNTHETIC_ONLY_SPICE_TEST_PASSWORD"
 
 
 class FakeMiddleware:
-    def __init__(self, fixture, *, failure=None, wrong_readback_at=None, display_count=0, healthy=True):
+    def __init__(self, fixture, *, failure=None, wrong_readback_at=None, display_count=0, healthy=True,
+                 fail_vm_readback=False, device_readback_issue=None):
         self.fixture = fixture
         self.failure = failure  # (operation index, "before" | "after")
         self.wrong_readback_at = wrong_readback_at
         self.display_count = display_count
         self.healthy = healthy
+        self.fail_vm_readback = fail_vm_readback
+        self.device_readback_issue = device_readback_issue
+        self.device_create_count = 0
         self.datasets = {}
         self.vms = {}
         self.devices = {}
@@ -57,6 +61,8 @@ class FakeMiddleware:
                 rows = [row for row in rows if row.get("id") == target]
             return rows
         if method == "vm.query":
+            if self.fail_vm_readback and self.vms:
+                raise TimeoutError("synthetic VM read-back unavailable")
             filters = params[0] if params else []
             rows = [dict(row) for row in self.vms.values()]
             if filters:
@@ -64,6 +70,10 @@ class FakeMiddleware:
                 rows = [row for row in rows if row.get("id") == target]
             return rows
         if method == "vm.device.query":
+            if self.device_create_count and self.device_readback_issue == "error":
+                raise TimeoutError("synthetic device read-back unavailable")
+            if self.device_create_count and self.device_readback_issue == "empty":
+                return []
             filters = params[0] if params else []
             rows = [dict(row) for row in self.devices.values()]
             if filters:
@@ -145,6 +155,7 @@ class FakeMiddleware:
             row = {"id": device_id, "order": len(self.devices), "vm": payload["vm"],
                    "attributes": attributes}
             self.devices[device_id] = row
+            self.device_create_count += 1
             return dict(row)
         raise AssertionError(method)
 
@@ -183,11 +194,14 @@ class DesktopLiveWriterTests(unittest.TestCase):
         self.display_password_prompt.start()
         self.addCleanup(self.display_password_prompt.stop)
 
-    def writer(self, directory, *, failure=None, wrong_readback_at=None, display_count=0, healthy=True, access_probe=None):
+    def writer(self, directory, *, failure=None, wrong_readback_at=None, display_count=0, healthy=True,
+               access_probe=None, fail_vm_readback=False, device_readback_issue=None):
         fixture = load_reviewed_desktop_fixture()
         request, artifacts = _fixture_with_test_pins(self, directory)
         client = FakeMiddleware(fixture, failure=failure, wrong_readback_at=wrong_readback_at,
-                                display_count=display_count, healthy=healthy)
+                                display_count=display_count, healthy=healthy,
+                                fail_vm_readback=fail_vm_readback,
+                                device_readback_issue=device_readback_issue)
         if access_probe is None:
             access_probe = lambda path, user: True
         account = pwd.getpwuid(os.geteuid()).pw_name
@@ -445,6 +459,38 @@ class DesktopLiveWriterTests(unittest.TestCase):
                 self.assertEqual(bool(vms), mode == "after")
                 self.assertEqual(len(display_devices), 0)
                 self.assertEqual(len(client.writes), writes_before_reconcile)
+
+    def test_vm_readback_failure_preserves_successful_create_id_for_reconciliation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, mountpoint = self.writer(directory, fail_vm_readback=True)
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint), \
+                 self.assertRaises(DesktopWriterError):
+                writer.create(confirmation=self.confirmation(writer))
+            manifest = json.loads((Path(directory) / "operation.json").read_text())
+            self.assertEqual(len(client.writes), 4)
+            self.assertEqual(manifest["pending"]["identifier"], "DesktopTest")
+            self.assertEqual(manifest["pending"]["api_id"], 41)
+            self.assertEqual(manifest["pending"]["state"], "ambiguous")
+            self.assertIn(41, client.vms)
+
+    def test_device_readback_failure_after_valid_create_records_id_and_stops(self):
+        for issue in ("empty", "error"):
+            with self.subTest(issue=issue), tempfile.TemporaryDirectory() as directory:
+                writer, client, mountpoint = self.writer(directory, device_readback_issue=issue)
+                with patch.object(writer, "_require_root", return_value=None), \
+                     patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint), \
+                     self.assertRaises(DesktopWriterError):
+                    writer.create(confirmation=self.confirmation(writer))
+                manifest = json.loads((Path(directory) / "operation.json").read_text())
+                self.assertEqual(len(client.writes), 5)
+                self.assertEqual(client.writes[-1][0], "vm.device.create")
+                self.assertEqual(manifest["pending"]["identifier"], "DesktopTest:display")
+                self.assertEqual(manifest["pending"]["api_id"], 91)
+                self.assertEqual(manifest["pending"]["vm_id"], 41)
+                self.assertEqual(manifest["pending"]["state"], "ambiguous")
+                self.assertEqual(len(client.devices), 1)
+                self.assertEqual(manifest["status"], "reconcile_required")
 
     def test_preflight_request_refuses_unselected_network_and_settings_are_explicit(self):
         with tempfile.TemporaryDirectory() as directory:
