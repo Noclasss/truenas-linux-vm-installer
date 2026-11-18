@@ -272,10 +272,10 @@ def rehearse_persistent(
             raise OwnershipError("created dataset identifier does not match the plan")
         if not _resource_matches(backend.inventory(), manifest, resource):
             raise OwnershipError("created resource failed exact inventory read-back")
-        manifest["resources"].append(resource)
-        manifest["pending"] = None
         if kind == "vm":
             manifest["vm_id"] = result
+        manifest["resources"].append(resource)
+        manifest["pending"] = None
         if kind == "device":
             manifest["devices"].append({
                 "kind": identifier.rsplit(":", 1)[-1], "id": result,
@@ -290,7 +290,7 @@ def rehearse_persistent(
         create("dataset", vm_dataset, lambda: backend.create_parent(vm_dataset, manifest["installation_id"]))
         create("zvol", zvol, lambda: backend.create_volume(zvol, manifest["installation_id"]))
         create("vm", vm_name, lambda: backend.create_vm_record(vm_name, zvol, manifest["installation_id"]))
-        for kind in ("disk", "installer", "seed", "nic", "display"):
+        for kind in ("display", "disk", "installer", "seed", "nic"):
             create("device", f"{vm_name}:{kind}", lambda kind=kind: backend.attach(vm_name, kind, manifest["installation_id"]))
         manifest["status"] = "mock_complete_not_installed"
         _save(path, manifest)
@@ -333,8 +333,9 @@ def inspect_recovery(manifest_path: Path, backend: PersistentFakeBackend) -> Rec
     if not data["inventory_before"]["shared_parent_exists"]:
         expected.append(("dataset", shared_parent))
     expected.extend((("dataset", vm_dataset), ("zvol", zvol), ("vm", vm_name)))
+    expected.append(("device", f"{vm_name}:display"))
     expected.extend(("device", f"{vm_name}:{kind}")
-                    for kind in ("disk", "installer", "seed", "nic", "display"))
+                    for kind in ("disk", "installer", "seed", "nic"))
     recorded = []
     for row in data["resources"]:
         if not isinstance(row, dict):
