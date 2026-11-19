@@ -70,6 +70,7 @@ class ReadOnlyPreflightTests(unittest.TestCase):
             "pool.dataset.query": [{"id": "tank/linux-vms", "type": "FILESYSTEM"}],
             "vm.supports_virtualization": True,
             "vm.maximum_supported_vcpus": 16,
+            "system.info": {"physmem": 32 * 1024**3},
             "vm.get_available_memory": 16 * 1024**3,
         }
 
@@ -112,6 +113,9 @@ class ReadOnlyPreflightTests(unittest.TestCase):
             ("vm.get_available_memory.result", "unit", None),
             ("vm.get_available_memory.result", "unit", "MiB"),
             ("vm.get_available_memory.result", "truenas_version", "TrueNAS-26.0.0-BETA.3"),
+            ("system.info.physmem", "unit", None),
+            ("system.info.physmem", "unit", "MiB"),
+            ("system.info.physmem", "truenas_version", "TrueNAS-26.0.0-BETA.3"),
             ("pool.query.free", "unit", "MiB"),
             ("vm.create.memory", "unit", "bytes"),
         )
@@ -361,6 +365,18 @@ class ReadOnlyPreflightTests(unittest.TestCase):
 
     def test_rejects_insufficient_or_malformed_memory(self):
         required_memory_bytes = (self.request.memory_mib + self.request.host_reserve_mib) * 1024**2
+        client = self.assert_rejected(
+            responses={**self.responses, "system.info": {"physmem": required_memory_bytes - 1}},
+            contains="physical RAM is below",
+        )
+        self.assertNotIn("vm.get_available_memory", [method for method, _ in client.calls])
+        for value in (None, True, 0, -1, "32768"):
+            with self.subTest(physical_memory=value):
+                client = self.assert_rejected(
+                    responses={**self.responses, "system.info": {"physmem": value}},
+                    contains="invalid total physical-memory",
+                )
+                self.assertNotIn("vm.get_available_memory", [method for method, _ in client.calls])
         self.assert_rejected(
             responses={**self.responses, "vm.get_available_memory": required_memory_bytes - 1},
             contains="below the VM request",

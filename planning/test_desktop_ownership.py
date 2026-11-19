@@ -17,11 +17,11 @@ OPERATIONS = (
     "dataset:testpool/linux-vms/desktop-test",
     "zvol:testpool/linux-vms/desktop-test/disk0",
     "vm:desktop-test",
+    "device:desktop-test:display",
     "device:desktop-test:disk",
     "device:desktop-test:installer",
     "device:desktop-test:seed",
     "device:desktop-test:nic",
-    "device:desktop-test:display",
 )
 
 

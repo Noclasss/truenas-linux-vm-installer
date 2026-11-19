@@ -64,11 +64,12 @@
 
 ### Phase 2 — Reviewed one-line launcher and live-disabled installer core
 
-- Design the paste command around an immutable revision and separately pinned launcher digest. Stage to a private directory, verify before execution, clean only the launcher's own temporary files, and pass through user arguments safely.
-- Extend/reuse existing shared local `midclt`, exact-build schema validation, read-only preflight, manifest, and safe artifact-download helpers only after auditing all callers and adapting tests.
-- Implement no-write preview and plan rendering first. Keep the live profile allowlist empty.
+- [x] Add a separate, no-argument Ubuntu Desktop preview bootstrapper. It stages only the reviewed source commit `912333b58bdaec01a82bb9365212cf5642cc748b` in a private temporary checkout, verifies the exact commit before running the local `install.sh`, and cleans only that temporary checkout.
+- [x] Pin the bootstrapper's SHA-256 in the README copy/paste command; a regression test requires the documented pin to match the exact script bytes.
+- [x] Fake-Git tests cover exact-commit success, mismatched-commit and fetch-failure refusal before launch, argument rejection, mode-0700 staging, and temporary-tree cleanup. This exercises the bootstrapper's control flow; it does not test GitHub transport or TrueNAS.
+- [ ] Replace the reviewed source pin only after a later code revision has been reviewed. Keep this bootstrapper preview-only; `install.sh` remains local-only and no live writer is reachable.
 
-**Gate:** launcher and preview tests pass; no live write method is reachable from preview; missing/mismatched digest fails before Python execution.
+**Gate:** launcher, preview, and bootstrapper tests must pass; the documented digest must match the script bytes, and hash/checkout mismatch must stop before Python execution. Preview must have no reachable live-write method. Passing this gate still proves no live support.
 
 ### Phase 3 — Create-only live flow (code-reviewed, still disabled)
 
@@ -86,6 +87,21 @@
 - Validate image conversion, VM/device read-back, provisioning completion, graphical console, usable desktop login, and cleanup/reconciliation separately. Never touch existing production VMs/disks or production credentials.
 
 **Gate:** profile can be enabled only for builds/routes that passed all listed checks; other builds remain refused.
+
+### Disposable test sequence — proposal only, not authorization
+
+This plan is for a single, disposable Ubuntu Desktop guest on `TrueNAS-26.0.0-BETA.2`. The current repository has no live writer and `LIVE_PROFILE_ALLOWLIST` is empty, so no live test is executable from this checkout. Do not substitute ad-hoc `midclt` writes. A later test requires a separately reviewed live-writer revision, fresh read-only preflight, and separate explicit approval before the first TrueNAS mutation.
+
+1. **Select and recheck the disposable boundary.** Use only a pool explicitly selected by the user; do not switch pools to work around a failed check. Re-read the exact TrueNAS build and method contracts, pool health/capacity, RAM headroom, VM and device inventory, candidate storage paths, and bridge/interface membership immediately before any approved test. Previously reported VM, pool, bridge, resource, and reserve values are proposal inputs, not selections, reservations, or authorization. Choose a new unique test-only dataset path outside any production workload namespace; prove the exact leaf path and zvol absent. Never claim an existing parent as owned.
+2. **Stage and re-verify the exact artifact.** Stage the already verified 26.04.1 ISO into a private, run-specific location scoped to the disposable test. On the staged copy, re-verify the detached signature against the pinned Ubuntu key fingerprint and the checksum manifest, then verify exact ISO size and SHA-256. Re-inspect the source catalogue from those same bytes. Preserve the existing pins; do not treat earlier cache verification as proof that a transferred/staged copy is intact. Stage seed media privately as well; keep its hash-bearing contents out of logs and Git.
+3. **Prove ownership and recoverability before the guest run.** A reviewed writer must use an exclusive private manifest created before the first write, record the exact pre-write absence/parent ownership state, create resources individually, and immediately read back exact dataset/zvol identity, type and size, VM identity, disk association, and every device. Offline fault-injection tests must cover failure-before-apply and lost-response-after-apply for each creation. On an ambiguous result, stop; query exact targets read-only, mark manual reconciliation, and never retry, resume, or auto-delete. Live cleanup must be limited to positively owned test resources.
+4. **Run one unattended install with no guest NIC.** Keep `desktop_source_id` unset in all preview output. For the actual test-only seed, choose one catalogue ID explicitly after approval; `ubuntu-desktop-minimal` is the ISO's labelled default, but its installer behavior is untested and it is not preselected here. Use a hidden local credential prompt and a synthetic disposable account—never share a password or hash in chat or logs. Attach the verified ISO and private NoCloud seed, leave autostart off, and start only the new installer VM after the complete plan is shown and the separately approved create gate is satisfied. First attempt with no NIC to avoid LAN exposure; if the ISO cannot complete unattended installation offline, stop and obtain a verified isolated-network plan rather than attaching a LAN bridge by default.
+5. **Verify poweroff, then test the installed desktop.** Read back the installer VM and devices, confirm Subiquity completed and the VM is stopped after its requested `poweroff`, then detach only the exact installer media devices with read-back. Start the installed guest only as a separately stated step in the authorized test plan. Confirm hypervisor state and use the TrueNAS graphical console/SPICE to verify a usable desktop session and local test-account login; a text prompt or `RUNNING` state alone is insufficient. Keep networking disconnected unless its need and isolation have been proven.
+6. **Clean up only the disposable run.** Read the manifest and exact live inventory again. Stop only the named test VM, remove only its positively identified devices and VM, preserve production resources and unrelated storage, then remove the exact test zvol and only empty datasets created by this run, non-recursively. Read back absence after each deletion and verify pre-existing VM/dataset inventories are unchanged. Any mismatch or ambiguous write halts cleanup for manual reconciliation; no wildcard, prefix, force, or recursive deletion.
+
+**Network boundary:** A bridge connected to a primary LAN may give the guest access to reachable local services; actual reachability depends on current firewall/isolation policy, which the offline preview does not establish. A bridge with no subnet configured does not prove isolation: bridge members, VLAN tagging, DHCP, routes, and switch policies must be checked. No bridge-backed isolated test network is confirmed by this plan. The safest first attempt is no NIC; if networking is required, stop until a current read-only topology/policy check identifies an existing isolated option and the user approves it. Creating or changing a VLAN, bridge, firewall, or network is outside this plan.
+
+**Gate:** no test starts until the exact VM name, test-only storage path, resource limits/reserves, source ID for the test seed, network choice (prefer no NIC), installer start/poweroff/guest-boot steps, and exact cleanup scope are confirmed and separately authorized. This document and any successful read-only preflight are not authorization.
 
 ### Phase 5 — Release and operator documentation
 
@@ -119,8 +135,8 @@
 - The current deployment and ownership flows still accept only the built-in
   offline fake. No live writer, host changes, ISO download or graphical boot has
   been performed by this work.
-- Next: run the local verifier on the actual pinned artifacts and inspect the
-  ISO source catalogue. Design staged-media access and a separately reviewed
-  live writer; do not replace the fake type gate with a live adapter. Validate
-  exact runtime writes, durable ownership and graphical installation on a
-  specifically selected disposable target before enabling deployment.
+- The new `ubuntu-desktop-preview-bootstrap.sh` stages and executes only the
+  reviewed preview commit `912333b58bdaec01a82bb9365212cf5642cc748b`; its own
+  SHA-256 is pinned in the README. It has not been run on TrueNAS and is not an
+  installer.
+- Next: run the checked-in local verifier on the exact pinned artifacts and inspect the ISO source catalogue. Design staged-media access and a separately reviewed live writer; do not replace the fake type gate. Validate exact runtime writes, durable ownership, and graphical installation only on a specifically selected disposable target with separate authorization.

@@ -21,6 +21,7 @@ else:  # direct execution as ``python planning/check_readonly_preflight.py``
 READ_ONLY_METHODS = frozenset({
     "pool.query",
     "pool.dataset.query",
+    "system.info",
     "vm.query",
     "vm.device.query",
     "vm.device.nic_attach_choices",
@@ -44,7 +45,7 @@ class ReadOnlyPreflightRequest:
     profile: str
     vm_name: str
     pool_name: str
-    bridge_name: str
+    bridge_name: str | None
     vcpus: int
     memory_mib: int
     disk_gib: int
@@ -59,7 +60,7 @@ class ReadOnlyPreflightReport:
     checked_method_contracts: int
     vm_name: str
     pool_name: str
-    bridge_name: str
+    bridge_name: str | None
     checks: tuple[str, ...]
     live_write_authorized: bool = False
     vm_started: bool = False
@@ -76,7 +77,10 @@ def _validate_request(request: ReadOnlyPreflightRequest) -> None:
         raise PreflightError("pool name must be a safe single path component")
     if request.pool_name.casefold() in {"boot-pool", "freenas-boot"}:
         raise PreflightError("boot pools are not eligible VM storage targets")
-    if not isinstance(request.bridge_name, str) or not _BRIDGE.fullmatch(request.bridge_name):
+    if request.bridge_name is None:
+        if request.profile != "ubuntu-desktop":
+            raise PreflightError("a bridge selection is required for this profile")
+    elif not isinstance(request.bridge_name, str) or not _BRIDGE.fullmatch(request.bridge_name):
         raise PreflightError("bridge name is invalid")
     minimum_vcpus, minimum_memory_mib, minimum_disk_gib = (
         (2, 6 * 1024, 25) if request.profile == "ubuntu-desktop" else (1, 1024, 16)
@@ -170,6 +174,7 @@ def run_read_only_preflight(
         ("pool.query.free", "bytes"),
         ("vm.create.memory", "MiB"),
         ("vm.get_available_memory.result", "bytes"),
+        ("system.info.physmem", "bytes"),
     ):
         evidence = semantics.get(field) if isinstance(semantics, dict) else None
         if (
@@ -208,14 +213,16 @@ def run_read_only_preflight(
             "selected pool has less than the full disk, staging space, and requested reserve"
         )
 
-    bridge_result = _read(reader, methods, "vm.device.nic_attach_choices", [])
-    if not isinstance(bridge_result, dict) or not isinstance(bridge_result.get("BRIDGE"), list):
-        raise PreflightError("VM NIC attach choices returned an invalid result")
-    bridge_choices = bridge_result["BRIDGE"]
-    if any(not isinstance(item, str) for item in bridge_choices):
-        raise PreflightError("VM NIC attach choices contains invalid bridge entries")
-    if request.bridge_name not in bridge_choices:
-        raise PreflightError("caller-selected bridge is not an eligible VM attachment target")
+    bridge_choices: list[str] = []
+    if request.bridge_name is not None:
+        bridge_result = _read(reader, methods, "vm.device.nic_attach_choices", [])
+        if not isinstance(bridge_result, dict) or not isinstance(bridge_result.get("BRIDGE"), list):
+            raise PreflightError("VM NIC attach choices returned an invalid result")
+        bridge_choices = bridge_result["BRIDGE"]
+        if any(not isinstance(item, str) for item in bridge_choices):
+            raise PreflightError("VM NIC attach choices contains invalid bridge entries")
+        if request.bridge_name not in bridge_choices:
+            raise PreflightError("caller-selected bridge is not an eligible VM attachment target")
 
     vm_rows = _query_rows(_read(reader, methods, "vm.query", [[], {"select": ["name"]}]), "vm.query")
     vm_names: list[str] = []
@@ -291,22 +298,32 @@ def run_read_only_preflight(
     if request.vcpus > maximum_vcpus:
         raise PreflightError("requested vCPU count exceeds the host-supported maximum")
 
+    system_info = _read(reader, methods, "system.info", [])
+    physical_memory_bytes = system_info.get("physmem") if isinstance(system_info, dict) else None
+    if type(physical_memory_bytes) is not int or physical_memory_bytes <= 0:
+        raise PreflightError("host returned an invalid total physical-memory byte count")
+    required_memory_bytes = (request.memory_mib + request.host_reserve_mib) * _MIB
+    if physical_memory_bytes < required_memory_bytes:
+        raise PreflightError("host physical RAM is below the VM request plus requested reserve")
+
     # The exact-build core.get_methods capture describes this return value in bytes.
     available_memory_bytes = _read(reader, methods, "vm.get_available_memory", [False])
     if type(available_memory_bytes) is not int or available_memory_bytes < 0:
         raise PreflightError("host returned an invalid available-memory value")
-    required_memory_bytes = (request.memory_mib + request.host_reserve_mib) * _MIB
     if available_memory_bytes < required_memory_bytes:
         raise PreflightError("host available memory is below the VM request plus requested reserve")
 
     checks = (
         "exact build and reviewed request/return method contracts",
         "caller-selected pool health, ONLINE state, and capacity for the full disk, artifact staging, and requested reserve",
-        "caller-selected bridge is an eligible VM NIC attachment target",
         "VM name and intended dataset paths are collision-free",
         "hardware virtualization and requested vCPU limit",
-        "available memory meets the request plus caller-selected reserve",
+        "total physical RAM and available memory meet the request plus caller-selected reserve",
     )
+    if request.bridge_name is None:
+        checks += ("no VM NIC requested; no host-network attachment is changed",)
+    else:
+        checks += ("caller-selected bridge is an eligible VM NIC attachment target",)
     if request.profile == "ubuntu-desktop":
         checks += (
             "desktop VM display enablement, installer CD-ROM, and NoCloud RAW data-disk requests match reviewed exact-build schemas",
