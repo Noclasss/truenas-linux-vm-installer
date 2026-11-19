@@ -7,7 +7,6 @@ import os
 import pwd
 import stat
 import tempfile
-import traceback
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -20,13 +19,13 @@ from planning.desktop_live_writer import (
 from planning.desktop_write_contracts import load_reviewed_desktop_fixture
 
 _GIB = 1024**3
-_TEST_DISPLAY_PASSWORD = "SYNTHETIC_ONLY_SPICE_TEST_PASSWORD"
 
 
 class FakeMiddleware:
     def __init__(self, fixture, *, failure=None, wrong_readback_at=None, display_count=0, healthy=True,
-                 fail_vm_readback=False, device_readback_issue=None):
+                 fail_vm_readback=False, device_readback_issue=None, hostname="fakehost"):
         self.fixture = fixture
+        self.hostname = hostname
         self.failure = failure  # (operation index, "before" | "after")
         self.wrong_readback_at = wrong_readback_at
         self.display_count = display_count
@@ -85,7 +84,7 @@ class FakeMiddleware:
         if method == "vm.maximum_supported_vcpus":
             return 8
         if method == "system.info":
-            return {"physmem": 64 * 1024**3}
+            return {"hostname": self.hostname, "physmem": 64 * 1024**3}
         if method == "vm.get_available_memory":
             return 32 * 1024 * 1024**2
 
@@ -111,6 +110,9 @@ class FakeMiddleware:
         if self.failure == (index, "after"):
             raise TimeoutError("synthetic applied write with lost response")
         return result
+
+    def close(self):
+        return None
 
     def _apply(self, method, params):
         payload = params[0]
@@ -182,18 +184,12 @@ def _fixture_with_test_pins(testcase, directory):
         memory_mib=6144, disk_gib=32, host_reserve_mib=1024,
         pool_reserve_mib=1024, source_id="ubuntu-desktop-minimal",
         cache_on_selected_pool=False, bridge_name=None,
+        expected_hostname="fakehost",
     )
     return request, artifacts
 
 
 class DesktopLiveWriterTests(unittest.TestCase):
-    def setUp(self):
-        self.display_password_prompt = patch.object(
-            writer_module.getpass, "getpass", return_value=_TEST_DISPLAY_PASSWORD
-        )
-        self.display_password_prompt.start()
-        self.addCleanup(self.display_password_prompt.stop)
-
     def writer(self, directory, *, failure=None, wrong_readback_at=None, display_count=0, healthy=True,
                access_probe=None, fail_vm_readback=False, device_readback_issue=None):
         fixture = load_reviewed_desktop_fixture()
@@ -212,9 +208,19 @@ class DesktopLiveWriterTests(unittest.TestCase):
             manifest_path=Path(directory) / "operation.json",
             service_account=account,
             access_probe=access_probe,
+            target_registry_root=Path(directory) / "targets",
             artifact_verifier=lambda *args: {
+                "filename": writer_module.desktop.IMAGE_FILENAME,
+                "sha256": writer_module.desktop.ARTIFACT_SHA256,
+                "size_bytes": writer_module.desktop.ARTIFACT_SIZE_BYTES,
+                "signing_key_fingerprint": writer_module.desktop.SIGNING_KEY_FINGERPRINT,
+                "manifest_sha256": "b" * 64,
                 "signature_verified": True, "iso_bytes_verified": True,
                 "live_install_allowed": False,
+            },
+            catalogue_verifier=lambda *args: {
+                "verified_from_iso": True, "source_id": "ubuntu-desktop-minimal",
+                "source_ids": ["ubuntu-desktop-minimal"], "catalogue_sha256": "a" * 64,
             },
         )
         return writer, client, mountpoint
@@ -253,19 +259,15 @@ class DesktopLiveWriterTests(unittest.TestCase):
                 and params[0].get("attributes", {}).get("dtype") == "DISPLAY"
             ]
             self.assertEqual(len(display_creates), 1)
-            self.assertEqual(sum(
-                _TEST_DISPLAY_PASSWORD in json.dumps(params)
-                for _, params in writes
-            ), 1)
             self.assertEqual(display_creates[0]["attributes"], {
                 "dtype": "DISPLAY", "type": "SPICE", "bind": "127.0.0.1",
                 "web": True, "wait": False, "resolution": "1024x768",
-                "port": None, "web_port": None, "password": _TEST_DISPLAY_PASSWORD,
+                "port": None, "web_port": None, "password": None,
             })
             display_readback = client.devices[result["display_device_id"]]["attributes"]
             self.assertEqual(display_readback["port"], 5900)
             self.assertEqual(display_readback["web_port"], 5901)
-            self.assertNotIn(_TEST_DISPLAY_PASSWORD, json.dumps(result))
+
             self.assertEqual(sum(
                 1 for device in client.devices.values()
                 if device["attributes"].get("dtype") == "DISPLAY"
@@ -291,7 +293,6 @@ class DesktopLiveWriterTests(unittest.TestCase):
             self.assertTrue(all(not row["live_vm_process_readable_verified"] for row in manifest["files"]))
             text = manifest_path.read_text()
             self.assertNotIn("synthetic private seed", text)
-            self.assertNotIn(_TEST_DISPLAY_PASSWORD, text)
             self.assertNotIn("password", manifest["resources"][4]["attributes"])
             self.assertTrue(all(
                 item["attributes"].get("dtype") != "DISPLAY"
@@ -307,35 +308,33 @@ class DesktopLiveWriterTests(unittest.TestCase):
             self.assertEqual(client.writes, [])
             self.assertFalse((Path(directory) / "operation.json").exists())
 
-    def test_display_password_refusal_precedes_any_resource_creation(self):
-        for password in ("", None, "contains\ncontrol"):
-            with self.subTest(password_type=type(password).__name__), tempfile.TemporaryDirectory() as directory:
-                writer, client, _ = self.writer(directory)
-                with patch.object(writer, "_require_root", return_value=None), \
-                     patch.object(writer_module.getpass, "getpass", return_value=password), \
-                     self.assertRaises(DesktopWriterError):
-                    writer.create(confirmation=self.confirmation(writer))
-                self.assertEqual(client.writes, [])
-                self.assertFalse((Path(directory) / "operation.json").exists())
+    def test_wrong_confirmation_refuses_before_any_write_or_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory)
+            with patch.object(writer, "_require_root", return_value=None), self.assertRaises(DesktopWriterError):
+                writer.create(confirmation="CREATE DesktopTest wrongphrase")
+            self.assertFalse(client.writes)
+            self.assertFalse((Path(directory) / "operation.json").exists())
 
-    def test_display_password_never_enters_result_manifest_or_failure_text(self):
-        for mode in ("before", "after"):
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
-                writer, client, mountpoint = self.writer(directory, failure=(4, mode))
-                with patch.object(writer, "_require_root", return_value=None), \
-                     patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint), \
-                     self.assertRaises(DesktopWriterError) as caught:
-                    writer.create(confirmation=self.confirmation(writer))
-                self.assertEqual(len(client.writes), 5)
-                self.assertEqual(client.writes[4][0], "vm.device.create")
-                self.assertEqual(client.writes[4][1][0]["attributes"]["password"], _TEST_DISPLAY_PASSWORD)
-                manifest_path = Path(directory) / "operation.json"
-                text = manifest_path.read_text()
-                self.assertNotIn(_TEST_DISPLAY_PASSWORD, text)
-                self.assertNotIn(_TEST_DISPLAY_PASSWORD, str(caught.exception))
-                self.assertNotIn(_TEST_DISPLAY_PASSWORD, "".join(traceback.format_exception(caught.exception)))
-                self.assertEqual(json.loads(text)["pending"]["state"], "ambiguous")
-                self.assertEqual(len(client.devices), int(mode == "after"))
+    def test_wrong_verified_hostname_refuses_before_any_write_or_manifest(self):
+        from dataclasses import replace
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory)
+            writer.request = replace(writer.request, expected_hostname="different-host")
+            with patch.object(writer, "_require_root", return_value=None), self.assertRaisesRegex(DesktopWriterError, "hostname"):
+                writer.create(confirmation=self.confirmation(writer))
+            self.assertFalse(client.writes)
+            self.assertFalse((Path(directory) / "operation.json").exists())
+
+    def test_failed_artifact_verification_stops_before_middleware_contact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory)
+            writer.artifact_verifier = lambda *args: {"signature_verified": False, "iso_bytes_verified": False}
+            with patch.object(writer, "_require_root", return_value=None), self.assertRaises(DesktopWriterError):
+                writer.create(confirmation="unused")
+            self.assertEqual(client.calls, [])
+            self.assertFalse(client.writes)
+            self.assertFalse((Path(directory) / "operation.json").exists())
 
     def test_preflight_refusal_precedes_any_write_or_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
