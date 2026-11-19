@@ -1,9 +1,19 @@
 # Implementation Roadmap
 
-**Current state (2026-11-17):** an experimental offline planner, reusable safety
+**Current state (2026-11-19):** an experimental offline planner, reusable safety
 helpers, Ubuntu Server artifact/NoCloud preparation, and Server/Desktop mock
-orchestration. PRs #38 and #39 add local signed-ISO verification tooling and exact
-fake-resource read-back. No live installer writer is released.
+orchestration. Draft PR #45 contains the Ubuntu Desktop create-only writer and
+the first-create service-account ordering fix; it remains review-only and
+`LIVE_PROFILE_ALLOWLIST` remains empty. No live installer writer is released.
+
+**PR #45 offline verification (2026-11-19):** code commit
+`24cef09dc56f2851c5793a212a1d787a42225ef2` passed 301 offline tests with 0 skips,
+including the real disposable GnuPG signature test, and the clean-checkout smoke
+checks. Separate artifact verification passed the pinned Ubuntu signature and
+ISO size/SHA-256 checks, extracted the catalogue with 7-Zip 25.01, found
+`ubuntu-desktop-minimal` as the default, and confirmed the ISO digest was
+unchanged after extraction. These checks do not establish host readiness or
+guest behavior; no TrueNAS preflight or resource operation occurred.
 
 **Verification checkpoint (2026-11-17):** On `74040ffc679184b790d3129bc759c10f8a419d0b`,
 `./install.sh --interactive --profile ubuntu-desktop --inventory planning/examples/inventory.json`
@@ -40,7 +50,7 @@ checks, actual ISO verification and optional read-only host preflight.
 passed unit tests, compilation, preview examples, and whitespace checks on that
 exact commit. No local tests were rerun during this documentation refresh.
 
-**Remaining Desktop gates:** the preview-only bootstrapper stages the pinned preview source and runs the offline planner; it does not query TrueNAS or create resources. Confirm the target build and fresh read-only preflight first, then independently review and implement the live writer and ownership/recovery integration. Validate unattended installation, poweroff, and graphical login only on a separately authorized disposable target. The verified catalogue IDs do not prove autoinstall behavior. Keep `LIVE_PROFILE_ALLOWLIST` empty until all release gates are met. See the [Desktop plan](plans/2026-11-16-ubuntu-desktop-quick-deploy.md).
+**Remaining Desktop gates:** review and publish draft PR #45 without enabling the live profile; prepare a private target/seed plan, then obtain a fresh exact-build read-only host preflight and approved administrator route before any live action. The service-account checks, writer ordering, and ambiguous-write recovery are offline-tested only. Validate unattended installation, poweroff, and graphical login only on a separately authorized disposable target. The verified catalogue IDs do not prove autoinstall behavior. Keep `LIVE_PROFILE_ALLOWLIST` empty until all release gates are met. See the [Desktop plan](plans/2026-11-16-ubuntu-desktop-quick-deploy.md).
 
 Separate operator-run synthetic conversion and Ubuntu Server console-boot evidence
 is preserved below. Neither exercised repository installer code. Conversion-probe
@@ -68,7 +78,7 @@ resources were cleaned up; cleanup was not part of the separate VM test.
 | Mock orchestration | Stateful fake rehearses the candidate write sequence, including an in-memory `vm.device.convert` model only for a fresh run-owned zvol. It validates the captured request schema, enforces the synthetic source size floor, records pending/acknowledged manifest state, and reconciles ambiguous outcomes as manual-review-only without retry. | Fake-only; no `midclt`, downloads, actual conversion, host storage writes, or live resource creation. |
 | TrueNAS compatibility | Sanitized request/return contracts for 20 selected methods on `TrueNAS-26.0.0-BETA.2`; bounded fail-closed validator and read-only comparison probe. Merged PR #10 narrowly handles exact `True`/`False` output for `vm.supports_virtualization` on this build. | Operator-reported contract/preflight results do not prove write acceptance, runtime resource behavior, or guest boot. |
 | Read-only preflight | `planning/readonly_preflight.py` and `planning/check_readonly_preflight.py` verify caller-selected pool, bridge, VM name, resource limits, total physical RAM from exact-build `system.info.physmem`, and available memory using allowlisted reads; the capacity floor covers the zvol, up to 859,090,944 bytes for the download cache, the pinned raw-image virtual size, a seed ISO capped at 16 MiB, and the explicit caller reserve. No resource is selected automatically. | Operator-provided output from pinned code `9e89be1b932750d3010f40cd68a916b8afd43a70` reports a pass on Beta.2: all 20 contracts and listed pool, bridge, conflict, virtualization/vCPU, and memory checks passed. Only read methods ran; no resources were created. This is not independently reproduced or write authorization. |
-| Ubuntu Desktop local work | Candidate ISO metadata and offline credential/config/media helpers exist. On 2026-11-17 the pinned manifest signature, exact ISO size/SHA-256, and catalogue source IDs (`ubuntu-desktop-minimal` default; `ubuntu-desktop` also present) were verified. The opt-in preflight reuses exact-build pool/network/name/CPU/RAM checks, budgets the pinned ISO plus 2 MiB seed disk, and validates display, installer-CDROM, and NoCloud-RAW request shapes against the reviewed fixture. Merged PR #36 adds a private atomic fake manifest and read-only ownership/reconciliation report with before/after fault injection. | No live preflight, VM creation, installer, or graphical boot was run. Catalogue evidence does not prove autoinstall behavior. Ownership persistence/recovery remains mock-only and continuation is intentionally disabled. |
+| Ubuntu Desktop local work | Candidate ISO metadata and offline credential/config/media helpers exist. On 2026-11-19, PR #45's create-only writer was amended to validate the VM-process account before any middleware writes and recheck it after read-only preflight; regressions assert failed probes leave zero writes, no new guard, and no manifest. The clean code commit passed 301 offline tests with no skips and the smoke checks. The pinned signature, exact ISO size/SHA-256, and catalogue source IDs (`ubuntu-desktop-minimal` default; `ubuntu-desktop` also present) were separately verified; 7-Zip extraction left the ISO digest unchanged. | PR #45 remains draft; no live preflight, VM creation, installer, or graphical boot was run. Catalogue evidence does not prove autoinstall behavior. Ownership recovery remains mock-only and continuation is intentionally disabled. |
 | CI | The PR #17 planner run [39832859709](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39832859709), PR #18 run [39855166968](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39855166968), and PR #19 run [39859693278](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/39859693278) completed successfully. PRs #17 and #18 reported 150 and 152 local tests; PR #19 was docs-only. | Hosted checks and offline tests do not establish live TrueNAS compatibility or guest behavior. |
 
 **Independent read-only rerun (2026-10-22):** the exact-build comparison matched all 20 contracts, and the existing preflight logic passed its selected pool, bridge, conflict, virtualization/vCPU, and memory checks using current middleware responses collected over strict key-only SSH. No write methods ran. The preflight logic was executed locally through a temporary SSH response adapter, not through the checked-in CLI or local `midclt` adapter. Noninteractive root elevation was unavailable; no host staging, `/dev/zvol` access, write acceptance, or guest behavior was tested.

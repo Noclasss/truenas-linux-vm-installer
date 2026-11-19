@@ -112,8 +112,11 @@ Automatic Signing Key (2012) fingerprint as
 `843938DF228D22F7B3742BC0D94AA3F0EFE21092`. The downloaded official Ubuntu
 archive keyring contained that exact primary fingerprint. The signature and
 artifact verification command exited 0 using genuine GnuPG 2.4.7 through the
-isolated `gpg` fallback; `gpgv` was not available in that helper path. The exact
-files reported:
+isolated `gpgv` executable. The real suite test's skip guard checks `gpg` and
+`gpgconf` on the test process's `PATH`; both were exposed from the isolated helper
+directory. `RealSignatureTests.test_real_signature_tampering_and_wrong_identity`
+ran and passed, using genuine `gpg` with a disposable test key and rejecting both
+a modified manifest and the wrong signer. The exact files reported:
 
 - ISO: `ubuntu-26.04.1-desktop-amd64.iso`, 6,482,409,472 bytes,
   SHA-256 `601e30fbf5d97759367c632e2c33630665039b7e2158fd068403da3ccf1bda1f`.
