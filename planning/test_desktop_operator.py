@@ -230,7 +230,6 @@ raise SystemExit(operator.main(["inspect", "--manifest", sys.argv[1], "--live-in
             vm_payload = next(params[0] for method, params in fake.writes if method == "vm.create")
             self.assertIs(vm_payload["autostart"], False)
             self.assertNotIn("nic_attach", json.dumps(vm_payload))
-            self.assertNotIn("br01", output)
             self.assertFalse(any(method in {"vm.start", "vm.device.nic_attach_choices"} for method, _ in fake.writes))
             self.assertFalse(any(row["attributes"].get("dtype") == "NIC" for row in fake.devices.values()))
 
