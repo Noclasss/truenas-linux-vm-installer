@@ -220,6 +220,45 @@ def _device_attributes_match(actual: Any, expected: dict[str, Any]) -> bool:
     )
 
 
+def _verify_vm_process_account(
+    service_account: str, *, runner: Callable[..., Any] | None = None,
+) -> pwd.struct_passwd:
+    """Verify local account and runuser execution without touching staged files."""
+    if not isinstance(service_account, str) or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", service_account):
+        raise DesktopWriterError("selected VM-process service account name is invalid")
+    try:
+        account = pwd.getpwnam(service_account)
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        raise DesktopWriterError("selected VM-process service account is unavailable on this host") from exc
+    if account.pw_uid <= 0:
+        raise DesktopWriterError("VM-process service account must be a non-root account")
+    runuser = shutil.which("runuser")
+    if not runuser or not os.path.isabs(runuser):
+        raise DesktopWriterError("runuser is required at an absolute host PATH location for VM-process checks")
+    probe = (
+        "import os; "
+        f"assert os.geteuid() == {account.pw_uid}; "
+        "fd = os.open('/dev/null', os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)); "
+        "os.close(fd)"
+    )
+    execute = runner or subprocess.run
+    try:
+        result = execute(
+            [runuser, "-u", service_account, "--", "python3", "-c", probe],
+            check=False, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, env={"PATH": os.defpath, "LC_ALL": "C"}, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DesktopWriterError(
+            "runuser cannot execute local checks as the selected VM-process service account"
+        ) from exc
+    if result.returncode != 0:
+        raise DesktopWriterError(
+            "runuser cannot execute local checks as the selected VM-process service account"
+        )
+    return account
+
+
 class _CaptureMethodsClient:
     """Capture the exact method table already read by the compatibility check."""
     def __init__(self, client: Any):
@@ -264,9 +303,13 @@ class DesktopCreateOnlyWriter:
         if _effective_uid() != 0:
             raise DesktopWriterError("create-only adapter requires an authenticated root host process")
 
+    def _require_vm_process_account(self) -> pwd.struct_passwd:
+        return _verify_vm_process_account(self.service_account)
+
     def _check_inputs(self) -> tuple[dict[str, Any], dict[str, int], str, int, str, dict[str, Any], dict[str, Any]]:
         req = self.request
         self._require_root()
+        self._require_vm_process_account()
         if not _VM_NAME.fullmatch(req.vm_name) or not _POOL_NAME.fullmatch(req.pool_name):
             raise DesktopWriterError("VM or pool name is invalid")
         if (
@@ -429,6 +472,8 @@ class DesktopCreateOnlyWriter:
             raise DesktopWriterError("could not establish that the target has no prior operation; refusing before mutation") from exc
         if prior is not None:
             raise DesktopWriterError(f"target already has an operation record at {prior}; inspect it read-only before any new action")
+        # Recheck after all read-only host queries and before the guard/manifest or first middleware write.
+        service = self._require_vm_process_account()
         run_id = str(uuid.uuid4())
         guard_path = self.target_registry_root / f"{target_key}.json"
         guard: dict[str, Any] = {
@@ -553,13 +598,6 @@ class DesktopCreateOnlyWriter:
             ensure_trusted_directory_chain(mountpoint, "Desktop staging dataset")
         except (DesktopWriterError, FilesystemSafetyError) as exc:
             stop_ambiguous("staging mountpoint could not be validated", exc)
-
-        try:
-            service = pwd.getpwnam(self.service_account)
-        except (KeyError, TypeError) as exc:
-            stop_ambiguous("selected VM-process account is unavailable", exc)
-        if service.pw_uid <= 0:
-            stop_ambiguous("VM-process account must be a non-root service account")
 
         staged_iso = mountpoint / "ubuntu-installer.iso"
         staged_seed = mountpoint / "cidata.img"

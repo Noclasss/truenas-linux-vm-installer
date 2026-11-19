@@ -6,6 +6,7 @@ import json
 import os
 import pwd
 import stat
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -189,7 +190,67 @@ def _fixture_with_test_pins(testcase, directory):
     return request, artifacts
 
 
+class ServiceAccountPreflightTests(unittest.TestCase):
+    def account(self, *, uid=107, gid=107):
+        return pwd.struct_passwd((
+            "libvirt-qemu", "x", uid, gid, "VM process", "/", "/usr/sbin/nologin",
+        ))
+
+    def test_missing_service_account_is_rejected_before_runuser(self):
+        with patch.object(writer_module.pwd, "getpwnam", side_effect=KeyError("missing")), \
+             patch.object(writer_module.shutil, "which") as which, \
+             patch.object(writer_module.subprocess, "run") as run:
+            with self.assertRaisesRegex(DesktopWriterError, "service account is unavailable"):
+                writer_module._verify_vm_process_account("libvirt-qemu")
+        which.assert_not_called()
+        run.assert_not_called()
+
+    def test_root_cannot_be_selected_as_vm_process_account(self):
+        with patch.object(writer_module.pwd, "getpwnam", return_value=self.account(uid=0, gid=0)), \
+             patch.object(writer_module.shutil, "which") as which, \
+             patch.object(writer_module.subprocess, "run") as run:
+            with self.assertRaisesRegex(DesktopWriterError, "must be a non-root"):
+                writer_module._verify_vm_process_account("libvirt-qemu")
+        which.assert_not_called()
+        run.assert_not_called()
+
+    def test_missing_runuser_is_rejected(self):
+        with patch.object(writer_module.pwd, "getpwnam", return_value=self.account()), \
+             patch.object(writer_module.shutil, "which", return_value=None), \
+             patch.object(writer_module.subprocess, "run") as run:
+            with self.assertRaisesRegex(DesktopWriterError, "runuser is required"):
+                writer_module._verify_vm_process_account("libvirt-qemu")
+        run.assert_not_called()
+
+    def test_runuser_must_execute_the_local_probe_successfully(self):
+        completed = subprocess.CompletedProcess(args=[], returncode=0)
+        with patch.object(writer_module.pwd, "getpwnam", return_value=self.account()), \
+             patch.object(writer_module.shutil, "which", return_value="/usr/sbin/runuser"), \
+             patch.object(writer_module.subprocess, "run", return_value=completed) as run:
+            account = writer_module._verify_vm_process_account("libvirt-qemu")
+        self.assertEqual(account.pw_uid, 107)
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:4], ["/usr/sbin/runuser", "-u", "libvirt-qemu", "--"])
+        self.assertEqual(argv[4], "python3")
+        self.assertIn("/dev/null", argv[-1])
+        self.assertEqual(run.call_args.kwargs["env"]["PATH"], os.defpath)
+
+    def test_runuser_failure_is_a_prerequisite_refusal(self):
+        completed = subprocess.CompletedProcess(args=[], returncode=1)
+        with patch.object(writer_module.pwd, "getpwnam", return_value=self.account()), \
+             patch.object(writer_module.shutil, "which", return_value="/usr/sbin/runuser"), \
+             patch.object(writer_module.subprocess, "run", return_value=completed):
+            with self.assertRaisesRegex(DesktopWriterError, "cannot execute local checks"):
+                writer_module._verify_vm_process_account("libvirt-qemu")
+
+
 class DesktopLiveWriterTests(unittest.TestCase):
+    def setUp(self):
+        completed = subprocess.CompletedProcess(args=[], returncode=0)
+        self._runuser_patch = patch.object(writer_module.subprocess, "run", return_value=completed)
+        self._runuser_patch.start()
+        self.addCleanup(self._runuser_patch.stop)
+
     def writer(self, directory, *, failure=None, wrong_readback_at=None, display_count=0, healthy=True,
                access_probe=None, fail_vm_readback=False, device_readback_issue=None):
         fixture = load_reviewed_desktop_fixture()
@@ -200,7 +261,7 @@ class DesktopLiveWriterTests(unittest.TestCase):
                                 device_readback_issue=device_readback_issue)
         if access_probe is None:
             access_probe = lambda path, user: True
-        account = pwd.getpwuid(os.geteuid()).pw_name
+        account = pwd.getpwuid(os.geteuid()).pw_name if os.geteuid() else "nobody"
         mountpoint = Path(directory) / "per-vm-dataset"
         mountpoint.mkdir(mode=0o700, exist_ok=True)
         writer = DesktopCreateOnlyWriter(
@@ -228,6 +289,67 @@ class DesktopLiveWriterTests(unittest.TestCase):
     def confirmation(self, writer):
         with patch.object(writer, "_require_root", return_value=None):
             return writer.confirmation_phrase()
+
+    def assert_no_create_state(self, client, directory):
+        self.assertEqual(client.writes, [])
+        self.assertEqual(client.datasets, {})
+        self.assertEqual(client.vms, {})
+        self.assertFalse((Path(directory) / "operation.json").exists())
+        self.assertFalse((Path(directory) / "targets").exists())
+
+    def test_missing_service_account_refuses_direct_create_before_any_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory)
+            confirmation = self.confirmation(writer)
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module.pwd, "getpwnam", side_effect=KeyError("missing-account")), \
+                 self.assertRaisesRegex(DesktopWriterError, "service account is unavailable"):
+                writer.create(confirmation=confirmation)
+            self.assert_no_create_state(client, directory)
+
+    def test_root_vm_service_account_refuses_direct_create_before_any_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory)
+            confirmation = self.confirmation(writer)
+            writer.service_account = "root"
+            root_account = pwd.struct_passwd(("root", "x", 0, 0, "root", "/root", "/bin/sh"))
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module.pwd, "getpwnam", return_value=root_account), \
+                 self.assertRaisesRegex(DesktopWriterError, "must be a non-root"):
+                writer.create(confirmation=confirmation)
+            self.assert_no_create_state(client, directory)
+
+    def test_missing_runuser_refuses_direct_create_before_any_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory)
+            confirmation = self.confirmation(writer)
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module.shutil, "which", return_value=None), \
+                 self.assertRaisesRegex(DesktopWriterError, "runuser is required"):
+                writer.create(confirmation=confirmation)
+            self.assert_no_create_state(client, directory)
+
+    def test_service_account_unavailable_before_create_refuses_after_prior_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory)
+            confirmation = self.confirmation(writer)
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module.pwd, "getpwnam", side_effect=KeyError("removed-account")), \
+                 self.assertRaisesRegex(DesktopWriterError, "service account is unavailable"):
+                writer.create(confirmation=confirmation)
+            self.assert_no_create_state(client, directory)
+
+    def test_account_disappearing_during_readonly_preflight_stops_before_state_or_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory)
+            confirmation = self.confirmation(writer)
+            account = pwd.getpwnam(writer.service_account)
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module.pwd, "getpwnam", side_effect=[account, KeyError("removed-account")]), \
+                 self.assertRaisesRegex(DesktopWriterError, "service account is unavailable"):
+                writer.create(confirmation=confirmation)
+            self.assertGreater(len(client.calls), 0)
+            self.assert_no_create_state(client, directory)
 
     def run_writer(self, directory, *, failure=None, display_count=0, healthy=True):
         writer, client, mountpoint = self.writer(
@@ -299,6 +421,26 @@ class DesktopLiveWriterTests(unittest.TestCase):
                 or item.get("creation_method") == "vm.device.create"
                 for item in manifest["resources"] if item["kind"] == "device"
             ))
+
+    def test_existing_shared_dataset_is_reused_without_recreation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, mountpoint = self.writer(directory)
+            client.datasets["tanktest/linux-vms"] = {
+                "id": "tanktest/linux-vms", "type": "FILESYSTEM",
+                "mountpoint": str(mountpoint), "available": 100 * _GIB,
+            }
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint):
+                result = writer.create(confirmation=self.confirmation(writer))
+            dataset_writes = [
+                params[0]["name"] for method, params in client.writes
+                if method == "pool.dataset.create"
+            ]
+            self.assertNotIn("tanktest/linux-vms", dataset_writes)
+            self.assertEqual(len(dataset_writes), 2)
+            self.assertEqual(result["resource_count"], 7)
+            manifest = json.loads((Path(directory) / "operation.json").read_text())
+            self.assertTrue(manifest["inventory_before"]["shared_parent_exists"])
 
     def test_insufficient_privilege_refuses_before_writes(self):
         with tempfile.TemporaryDirectory() as directory:

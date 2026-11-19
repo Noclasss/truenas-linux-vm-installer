@@ -330,7 +330,9 @@ def _check_target(
         "state_paths": _private_state_root_state(),
         "staged_file_access": {
             "service_account": record["service_account"],
-            "account_existence_verified": False,
+            "account_existence_verified": True,
+            "account_nonroot_verified": True,
+            "runuser_local_probe_verified": True,
             "staged_copy_probe": "pending; actual host runuser open check runs after local staging and before vm.create",
         },
         "confirmation_phrase": phrase,

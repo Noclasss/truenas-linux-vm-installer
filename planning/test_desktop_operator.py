@@ -140,8 +140,11 @@ class DesktopOperatorCommandTests(unittest.TestCase):
                 "source_id": "ubuntu-desktop-minimal", "source_ids": ["ubuntu-desktop-minimal"],
                 "catalogue_sha256": "b" * 64, "verified_from_iso": True,
             }))
-            stack.enter_context(patch.object(operator, "_safe_read_probe", return_value=True))
+            self.access_probe = stack.enter_context(patch.object(operator, "_safe_read_probe", return_value=True))
             stack.enter_context(patch.object(operator.shutil, "which", return_value="/usr/sbin/runuser"))
+            stack.enter_context(patch.object(
+                writer_module, "_verify_vm_process_account", return_value=pwd.getpwnam(self.account),
+            ))
             stack.enter_context(patch.object(DesktopCreateOnlyWriter, "_require_root", return_value=None))
             stack.enter_context(patch.object(writer_module, "_exact_mountpoint", return_value=self.mountpoint))
             yield
@@ -167,6 +170,14 @@ class DesktopOperatorCommandTests(unittest.TestCase):
             self.assertEqual(report["verified_facts"]["host"]["hostname"], "fakehost")
             self.assertEqual(report["operator_supplied"]["expected_hostname"], "fakehost")
             self.assertEqual(report["verified_facts"]["middleware_write_methods_called"], [])
+            self.assertTrue(report["staged_file_access"]["account_existence_verified"])
+            self.assertTrue(report["staged_file_access"]["account_nonroot_verified"])
+            self.assertTrue(report["staged_file_access"]["runuser_local_probe_verified"])
+            self.assertEqual(
+                report["staged_file_access"]["staged_copy_probe"],
+                "pending; actual host runuser open check runs after local staging and before vm.create",
+            )
+            self.access_probe.assert_not_called()
             self.assertEqual(fake.writes, [])
             self.assertFalse(self.operations.exists())
             inspect_rc, _, inspect_err = self._run(["inspect", "--manifest", os.fspath(self.operations / "missing.json")])
