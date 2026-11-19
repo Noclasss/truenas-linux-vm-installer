@@ -10,6 +10,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAPPER = ROOT / "ubuntu-desktop-preview-bootstrap.sh"
+GIT_ENV_KEYS = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_TEMPLATE_DIR",
+    "GIT_EXEC_PATH", "GIT_SSL_NO_VERIFY", "GIT_ASKPASS", "SSH_ASKPASS",
+    "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_GLOBAL", "GIT_CONFIG", "GIT_PROXY_COMMAND", "GIT_SSH",
+    "GIT_SSH_COMMAND", "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+)
 
 
 class LauncherTests(unittest.TestCase):
@@ -41,7 +51,9 @@ class LauncherTests(unittest.TestCase):
             fake_bin = root / "bin"
             fake_bin.mkdir()
             scratch = root / "scratch"
-            scratch.mkdir()
+            scratch_target = root / "scratch-target"
+            scratch_target.mkdir()
+            scratch.symlink_to(scratch_target, target_is_directory=True)
             trace = root / "git-trace.json"
             launch_log = root / "launch.log"
             fake_git = fake_bin / "git"
@@ -55,7 +67,7 @@ class LauncherTests(unittest.TestCase):
                 "if args and args[0] == '-C': repo, args = pathlib.Path(args[1]), args[2:]\n"
                 "command = args[0] if args else ''\n"
                 "events = json.loads(pathlib.Path(os.environ['BOOTSTRAP_TRACE']).read_text()) if pathlib.Path(os.environ['BOOTSTRAP_TRACE']).exists() else []\n"
-                "event = {'command': command, 'args': args[1:], 'config': git_config, 'git_environment': {key: os.environ.get(key) for key in ('GIT_COMMON_DIR', 'GIT_TEMPLATE_DIR', 'GIT_EXEC_PATH', 'GIT_SSH_COMMAND', 'GIT_PROXY_COMMAND', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0')}}\n"
+                "event = {'command': command, 'args': args[1:], 'config': git_config, 'git_environment': {key: os.environ.get(key) for key in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_TEMPLATE_DIR', 'GIT_EXEC_PATH', 'GIT_SSL_NO_VERIFY', 'GIT_ASKPASS', 'SSH_ASKPASS', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG', 'GIT_PROXY_COMMAND', 'GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_CEILING_DIRECTORIES', 'GIT_DISCOVERY_ACROSS_FILESYSTEM')}, 'fixed_environment': {key: os.environ.get(key) for key in ('GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT', 'GIT_LFS_SKIP_SMUDGE')}}\n"
                 "if command == 'init':\n"
                 "    repo = pathlib.Path(args[-1]); repo.mkdir(parents=True)\n"
                 "    event['repo'] = str(repo)\n"
@@ -99,23 +111,24 @@ class LauncherTests(unittest.TestCase):
             remaining_temp = list(scratch.iterdir())
         return result, events, launched_args, remaining_temp
 
+    def _assert_temp_removed(self, events):
+        init_event = next(event for event in events if event["command"] == "init")
+        self.assertFalse(Path(init_event["repo"]).parent.exists())
+
     def test_bootstrapper_checks_pinned_checkout_and_runs_only_desktop_preview(self):
         script = BOOTSTRAPPER.read_text(encoding="utf-8")
         match = re.search(r"^reviewed_commit='([0-9a-f]{40})'$", script, re.MULTILINE)
         if match is None:
             self.fail("bootstrapper must pin a full commit SHA")
         pinned_commit = match.group(1)
+        injected_git_env = {key: f"sentinel-{key}" for key in GIT_ENV_KEYS}
+        injected_git_env.update({
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "http.sslVerify",
+            "GIT_CONFIG_VALUE_0": "false",
+        })
         result, events, launched_args, remaining_temp = self._run_bootstrapper(
-            revision=pinned_commit,
-            git_env={
-                "GIT_COMMON_DIR": "/tmp/injected-common",
-                "GIT_TEMPLATE_DIR": "/tmp/injected-template",
-                "GIT_EXEC_PATH": "/tmp/injected-exec",
-                "GIT_SSH_COMMAND": "false",
-                "GIT_PROXY_COMMAND": "false",
-                "GIT_CONFIG_KEY_0": "http.sslVerify",
-                "GIT_CONFIG_VALUE_0": "false",
-            },
+            revision=pinned_commit, git_env=injected_git_env,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(launched_args, "--interactive --profile ubuntu-desktop")
@@ -127,8 +140,20 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("http.sslVerify=true", fetch_event["config"])
         self.assertIn("http.followRedirects=false", fetch_event["config"])
         for event in events:
-            self.assertTrue(all(value is None for value in event["git_environment"].values()))
+            self.assertEqual(set(event["git_environment"]), set(GIT_ENV_KEYS))
+            self.assertEqual(event["git_environment"]["GIT_CONFIG_GLOBAL"], "/dev/null")
+            self.assertTrue(all(value is None for key, value in event["git_environment"].items() if key != "GIT_CONFIG_GLOBAL"))
+            self.assertEqual(event["fixed_environment"], {
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_LFS_SKIP_SMUDGE": "1",
+            })
         self.assertTrue(any(event.get("temp_mode") == 0o700 for event in events))
+        temp_dir = Path(next(event for event in events if event["command"] == "init")["repo"]).parent
+        self.assertEqual(temp_dir.parent, Path("/tmp"))
+        self.assertTrue(temp_dir.name.startswith("linux-vm-desktop-preview."))
+        self.assertFalse(temp_dir.exists())
         self.assertEqual(remaining_temp, [])
         self.assertIn("preview only", result.stderr)
 
@@ -137,6 +162,7 @@ class LauncherTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIsNone(launched_args)
         self.assertTrue(any(event["command"] == "rev-parse" for event in events))
+        self._assert_temp_removed(events)
         self.assertEqual(remaining_temp, [])
 
     def test_bootstrapper_refuses_fetch_failure_and_cleans_temporary_tree(self):
@@ -144,6 +170,7 @@ class LauncherTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(any(event["command"] == "fetch" for event in events))
         self.assertIsNone(launched_args)
+        self._assert_temp_removed(events)
         self.assertEqual(remaining_temp, [])
 
     def test_bootstrapper_rejects_arguments_before_network_or_checkout(self):
@@ -157,7 +184,10 @@ class LauncherTests(unittest.TestCase):
         digest = hashlib.sha256(BOOTSTRAPPER.read_bytes()).hexdigest()
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn(digest, readme)
-        self.assertIn("curl -fsSL --proto '=https' --proto-redir '=https'", readme)
+        wrapper = next(line for line in readme.splitlines() if line.startswith("( umask "))
+        self.assertIn('mktemp -d "/tmp/linux-vm-preview.', wrapper)
+        self.assertNotIn("${TMPDIR", wrapper)
+        self.assertIn("curl -fsSL --proto '=https' --proto-redir '=https'", wrapper)
 
 
 if __name__ == "__main__":

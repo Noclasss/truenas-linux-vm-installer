@@ -23,7 +23,7 @@ GIT_TERMINAL_PROMPT=0
 GIT_LFS_SKIP_SMUDGE=1
 export GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_TERMINAL_PROMPT GIT_LFS_SKIP_SMUDGE
 
-work_dir=$(mktemp -d "${TMPDIR:-/tmp}/linux-vm-desktop-preview.XXXXXXXX") || fail 'cannot create a private temporary directory'
+work_dir=$(mktemp -d "/tmp/linux-vm-desktop-preview.XXXXXXXX") || fail 'cannot create a private temporary directory'
 cleanup() {
     rm -rf -- "$work_dir"
 }
