@@ -2,6 +2,10 @@
 
 **State: NOT AUTHORIZED.** This is a planning worksheet, not an executable procedure or permission to mutate TrueNAS. The current preview launcher is offline-only; the create-only writer is not exposed through it and the live-profile allowlist remains empty. Do not substitute manual middleware writes. No live preflight or resource operation has been performed for this runbook.
 
+## Offline code snapshot — not live evidence
+
+The returned-ID reconciliation code and regression coverage are present in PR #44 at reviewed source commit `352718c7cb8256387188c524db22936ba2c41c23`. On that exact head, the local offline smoke ran 269 tests with one GnuPG-dependent skip; its status was `incomplete` and exit code 1 because `gpg`, `gpgv`, and `gpgconf` were unavailable. All other smoke checks passed. GitHub Actions run [44421941111](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/44421941111) passed on that exact SHA. The unit tests use mocks; neither this evidence nor this worksheet demonstrates live write acceptance, ISO verification/staging, host preflight, VM creation, or guest behavior. Re-check the exact PR head and its tests before relying on this code; newer code changes require fresh evidence.
+
 ## 1. Complete the approved target record
 
 Fill every field and have the operator explicitly approve this exact plan before any live operation:
