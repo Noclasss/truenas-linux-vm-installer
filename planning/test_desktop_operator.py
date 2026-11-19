@@ -196,6 +196,7 @@ raise SystemExit(operator.main(["inspect", "--manifest", sys.argv[1], "--live-in
             self.assertEqual(inspected["manifest_recorded"]["pending_operation"]["state"], "ambiguous")
             self.assertTrue(inspected["second_create_blocked_by_manifest_state"])
             self.assertTrue(inspected["fresh_inventory"]["performed"])
+            self.assertTrue(any(row.get("id") == 41 for row in inspected["fresh_inventory"]["confirms"]["vm_rows_by_recorded_id_or_name"]))
             fresh_devices = inspected["fresh_inventory"]["confirms"]["device_rows_by_returned_id_or_vm_id"]
             self.assertTrue(any(row.get("id") == 91 and row.get("vm") == 41 for row in fresh_devices))
             self.assertNotIn("password", child.stdout)
@@ -241,6 +242,30 @@ raise SystemExit(operator.main(["inspect", "--manifest", sys.argv[1], "--live-in
             self.assertIn("confirmation did not match", err)
             self.assertEqual(fake.writes, [])
             self.assertFalse(self.operations.exists())
+
+    def test_unreadable_history_fails_closed_before_middleware_calls(self):
+        fake = FakeMiddleware(self.fixture)
+        with self._runtime(fake):
+            self.operations.mkdir(mode=0o700)
+            history = self.operations / "unreadable.json"
+            history.write_text("{}")
+            os.chmod(history, 0o600)
+            original_read_text = Path.read_text
+
+            def deny_history(path, *args, **kwargs):
+                if path == history:
+                    raise PermissionError("synthetic unreadable history")
+                return original_read_text(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", deny_history):
+                rc, _, err = self._run(
+                    ["create", "--target", os.fspath(self.record_path)],
+                    input_value="irrelevant",
+                )
+            self.assertEqual(rc, 1)
+            self.assertIn("operation records could not be scanned", err)
+            self.assertEqual(fake.calls, [])
+            self.assertEqual(fake.writes, [])
 
     def test_failed_verification_wrong_host_and_malformed_history_stop_before_writes(self):
         failing_fake = FakeMiddleware(self.fixture)
