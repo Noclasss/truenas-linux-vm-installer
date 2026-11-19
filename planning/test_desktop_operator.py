@@ -88,6 +88,37 @@ class DesktopOperatorCommandTests(unittest.TestCase):
         path.write_text(json.dumps(record, sort_keys=True) + "\n")
         os.chmod(path, 0o600)
 
+    def test_target_reader_rejects_symlink_directory_fifo_and_oversized_files(self):
+        link = self.root / "target-link.json"
+        link.symlink_to(self.record_path)
+        fifo = self.root / "target-fifo"
+        os.mkfifo(fifo, 0o600)
+        oversized = self.root / "oversized.json"
+        oversized.write_bytes(b" " * (operator._MAX_TARGET_BYTES + 1))
+        os.chmod(oversized, 0o600)
+        for path in (link, self.root, fifo, oversized):
+            with self.subTest(path=path), self.assertRaises(operator.OperatorWorkflowError):
+                operator._read_target(path)
+
+    def test_target_reader_uses_opened_inode_if_path_is_replaced(self):
+        replacement = self.root / "replacement.json"
+        other = dict(self.record, vm_name="AttackerRecord")
+        self._write_record(replacement, other)
+        original = os.open
+        moved = self.root / "original-opened.json"
+
+        def open_then_replace(path, flags, *args, **kwargs):
+            fd = original(path, flags, *args, **kwargs)
+            if Path(path) == self.record_path:
+                self.record_path.rename(moved)
+                self.record_path.symlink_to(replacement)
+            return fd
+
+        with patch.object(operator.os, "open", side_effect=open_then_replace):
+            loaded = operator._read_target(self.record_path)
+        self.assertEqual(loaded["vm_name"], "DesktopTest")
+        self.assertEqual(self.record_path.resolve(), replacement.resolve())
+
     @contextmanager
     def _runtime(self, fake: FakeMiddleware, *, verifier_ok=True):
         with ExitStack() as stack:

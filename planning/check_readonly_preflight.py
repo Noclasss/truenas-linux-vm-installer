@@ -33,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile", required=True, choices=("ubuntu-server", "ubuntu-desktop"))
     parser.add_argument("--vm-name", required=True)
     parser.add_argument("--pool", required=True, help="caller-selected, non-boot storage pool")
-    parser.add_argument("--bridge", required=True, help="caller-selected existing VM bridge")
+    parser.add_argument("--bridge", help="caller-selected existing VM bridge; omit for an isolated Desktop VM with no NIC")
     parser.add_argument("--vcpus", required=True, type=int)
     parser.add_argument("--memory-mib", required=True, type=int)
     parser.add_argument("--disk-gib", required=True, type=int)
@@ -69,6 +69,17 @@ def main(argv: list[str] | None = None) -> int:
             client.close()
 
     print(f"Read-only preflight checks passed for {report.truenas_version}.")
+    print(
+        "Host facts: "
+        f"hostname={report.system_hostname or 'unknown'}, "
+        f"pool_free_bytes={report.pool_free_bytes}, "
+        f"physical_memory_bytes={report.physical_memory_bytes}, "
+        f"available_memory_bytes={report.available_memory_bytes}, "
+        f"maximum_supported_vcpus={report.maximum_supported_vcpus}, "
+        f"shared_parent_exists={report.shared_parent_exists}, "
+        f"target_vm_name_absent={report.target_vm_name_absent}, "
+        f"target_storage_paths_absent={report.target_storage_paths_absent}"
+    )
     print(f"Matched {report.checked_method_contracts} reviewed request/return method contracts.")
     print(f"Caller selections: VM={report.vm_name}, pool={report.pool_name}, bridge={report.bridge_name}.")
     for check in report.checks:

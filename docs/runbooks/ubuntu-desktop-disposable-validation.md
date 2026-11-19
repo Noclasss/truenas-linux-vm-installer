@@ -2,6 +2,14 @@
 
 **State: NOT AUTHORIZED.** This is a planning worksheet, not an executable procedure or permission to mutate TrueNAS. The current preview launcher is offline-only; the create-only writer is not exposed through it and the live-profile allowlist remains empty. Do not substitute manual middleware writes. No live preflight or resource operation has been performed for this runbook.
 
+## Current offline evidence — 2026-11-19
+
+The selected Ubuntu 26.04.1 Desktop ISO was verified locally with genuine GnuPG 2.4.7 against the official Ubuntu checksum signature and the pinned signing-key fingerprint. The exact size and SHA-256 matched the repository pin. The repository's bounded 7-Zip fallback extracted `casper/install-sources.yaml` from those same bytes; `ubuntu-desktop-minimal` is listed as the default “minimal but usable” Desktop source. Reproducible tool provenance, exact hashes, and catalogue evidence are in [artifact verification](../desktop-artifact-verification.md). This does not prove installation, offline completion, boot, display, or login.
+
+## Current host gate — not passed
+
+Available read-only diagnostics are partial: they do not establish the exact host build and method contracts, current CPU/memory headroom, bridge state, VM/device/zvol collision inventory, or service-account access to staged media. The helper's SSH attempt was denied, and no approved administrative operator route was available in-session. Do not reuse historical capacity/path snapshots as fresh preflight evidence. The exact target record and private NoCloud seed remain unprepared until the target identity and a private credential-handling path are established. Do not stage ISO/seed files, invoke `create`, or make resource changes as part of this runbook.
+
 ## Offline code snapshot — not live evidence
 
 The returned-ID reconciliation code and regression coverage are present in PR #44 at reviewed source commit `352718c7cb8256387188c524db22936ba2c41c23`. On that exact head, the local offline smoke ran 269 tests with one GnuPG-dependent skip; its status was `incomplete` and exit code 1 because `gpg`, `gpgv`, and `gpgconf` were unavailable. All other smoke checks passed. GitHub Actions run [44421941111](https://github.com/Noclasss/truenas-linux-vm-installer/actions/runs/44421941111) passed on that exact SHA. The unit tests use mocks; neither this evidence nor this worksheet demonstrates live write acceptance, ISO verification/staging, host preflight, VM creation, or guest behavior. Re-check the exact PR head and its tests before relying on this code; newer code changes require fresh evidence.

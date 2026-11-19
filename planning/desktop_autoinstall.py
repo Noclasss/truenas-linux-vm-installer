@@ -23,7 +23,7 @@ SOURCE_ID_CANDIDATES = frozenset({"ubuntu-desktop-minimal", "ubuntu-desktop"})
 SOURCE_ID_EVIDENCE = (
     "casper/install-sources.yaml from Ubuntu 26.04.1 Desktop ISO "
     "SHA-256 601e30fbf5d97759367c632e2c33630665039b7e2158fd068403da3ccf1bda1f "
-    "(verified 2026-11-17): ubuntu-desktop-minimal is default; "
+    "(verified 2026-11-19): ubuntu-desktop-minimal is default in the ISO catalogue; "
     "ubuntu-desktop is also present"
 )
 

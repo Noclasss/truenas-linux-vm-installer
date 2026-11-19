@@ -52,7 +52,7 @@ def artifact_metadata() -> dict[str, object]:
         "signing_key_fingerprint": SIGNING_KEY_FINGERPRINT,
         "integrity_status": (
             "Pinned SHA256SUMS signature and exact-size ISO bytes were verified "
-            "locally on 2026-11-17; any future staged bytes must be reverified."
+            "locally on 2026-11-19; any future staged bytes must be reverified."
         ),
         "image_format": "iso",
         "image_format_status": (

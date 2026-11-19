@@ -73,20 +73,34 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _read_target(path: Path) -> dict[str, Any]:
     path = Path(path)
+    fd = None
     try:
-        info = path.lstat()
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_uid not in {0, os.geteuid()}
-            or info.st_mode & 0o077
-            or info.st_size > _MAX_TARGET_BYTES
-        ):
-            raise OperatorWorkflowError("target record must be a bounded private regular file")
-        data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as stream:
+            fd = None
+            before = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_uid not in {0, os.geteuid()}
+                or before.st_mode & 0o077
+                or before.st_size > _MAX_TARGET_BYTES
+            ):
+                raise OperatorWorkflowError("target record must be a bounded private regular file")
+            raw = stream.read(_MAX_TARGET_BYTES + 1)
+            after = os.fstat(stream.fileno())
+            identity = lambda info: (info.st_dev, info.st_ino, info.st_size,
+                                     info.st_mtime_ns, info.st_ctime_ns)
+            if identity(before) != identity(after) or len(raw) != after.st_size:
+                raise OperatorWorkflowError("target record changed while being read")
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
     except OperatorWorkflowError:
         raise
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise OperatorWorkflowError("target record is unreadable or malformed") from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
     if not isinstance(data, dict) or set(data) != _REQUIRED_FIELDS:
         raise OperatorWorkflowError("target record fields do not match the reviewed schema")
     return data
