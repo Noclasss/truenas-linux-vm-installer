@@ -64,11 +64,12 @@
 
 ### Phase 2 — Reviewed one-line launcher and live-disabled installer core
 
-- Design the paste command around an immutable revision and separately pinned launcher digest. Stage to a private directory, verify before execution, clean only the launcher's own temporary files, and pass through user arguments safely.
-- Extend/reuse existing shared local `midclt`, exact-build schema validation, read-only preflight, manifest, and safe artifact-download helpers only after auditing all callers and adapting tests.
-- Implement no-write preview and plan rendering first. Keep the live profile allowlist empty.
+- [x] Add a separate, no-argument Ubuntu Desktop preview bootstrapper. It stages only the reviewed source commit `912333b58bdaec01a82bb9365212cf5642cc748b` in a private temporary checkout, verifies the exact commit before running the local `install.sh`, and cleans only that temporary checkout.
+- [x] Pin the bootstrapper's SHA-256 in the README copy/paste command; a regression test requires the documented pin to match the exact script bytes.
+- [x] Fake-Git tests cover exact-commit success, mismatched-commit and fetch-failure refusal before launch, argument rejection, mode-0700 staging, and temporary-tree cleanup. This exercises the bootstrapper's control flow; it does not test GitHub transport or TrueNAS.
+- [ ] Replace the reviewed source pin only after a later code revision has been reviewed. Keep this bootstrapper preview-only; `install.sh` remains local-only and no live writer is reachable.
 
-**Gate:** launcher and preview tests pass; no live write method is reachable from preview; missing/mismatched digest fails before Python execution.
+**Gate:** local launcher and bootstrapper tests must pass; hash mismatch or wrong checkout must stop before Python execution. Passing this gate still proves no live support.
 
 ### Phase 3 — Create-only live flow (code-reviewed, still disabled)
 
@@ -119,8 +120,11 @@
 - The current deployment and ownership flows still accept only the built-in
   offline fake. No live writer, host changes, ISO download or graphical boot has
   been performed by this work.
-- Next: run the local verifier on the actual pinned artifacts and inspect the
-  ISO source catalogue. Design staged-media access and a separately reviewed
-  live writer; do not replace the fake type gate with a live adapter. Validate
-  exact runtime writes, durable ownership and graphical installation on a
-  specifically selected disposable target before enabling deployment.
+- The new `ubuntu-desktop-preview-bootstrap.sh` stages and executes only the
+  reviewed preview commit `912333b58bdaec01a82bb9365212cf5642cc748b`; its own
+  SHA-256 is pinned in the README. It has not been run on TrueNAS and is not an
+  installer.
+- Next: obtain the exact live TrueNAS build and confirmed target selections,
+  run a fresh read-only Desktop preflight, then develop the create-only writer
+  behind the empty allowlist. Any disposable live test still needs a separate
+  exact plan and approval.
