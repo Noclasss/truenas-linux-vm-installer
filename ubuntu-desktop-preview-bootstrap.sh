@@ -3,20 +3,24 @@ set -eu
 umask 077
 
 repository_url='https://github.com/Noclasss/truenas-linux-vm-installer.git'
-reviewed_commit='912333b58bdaec01a82bb9365212cf5642cc748b'
 
 fail() {
-    printf 'Desktop preview bootstrap refused: %s\n' "$1" >&2
+    printf 'Desktop read-only preview bootstrap refused: %s\n' "$1" >&2
     exit 1
 }
 
-if [ "$#" -ne 0 ]; then
-    fail 'this entry point accepts no arguments; use a reviewed local checkout for other preview inputs'
-fi
+[ "$#" -eq 3 ] && [ "$1" = '--ref' ] && [ "$3" = '--preview' ] || \
+    fail 'usage: --ref FULL_COMMIT_SHA --preview'
+reviewed_commit=$2
+case "$reviewed_commit" in
+    *[!0-9a-f]*|'') fail 'the source revision must be a full lowercase 40-character commit SHA' ;;
+esac
+[ "${#reviewed_commit}" -eq 40 ] || fail 'the source revision must be a full lowercase 40-character commit SHA'
+
 command -v git >/dev/null 2>&1 || fail 'git is required'
 command -v python3 >/dev/null 2>&1 || fail 'python3 is required'
 
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_TEMPLATE_DIR GIT_EXEC_PATH GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_SYSTEM GIT_CONFIG_GLOBAL GIT_CONFIG GIT_PROXY_COMMAND GIT_SSL_NO_VERIFY GIT_ASKPASS GIT_SSH GIT_SSH_COMMAND GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM SSH_ASKPASS || true
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_TEMPLATE_DIR GIT_EXEC_PATH GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_CONFIG_KEY_0 GIT_CONFIG_KEY_1 GIT_CONFIG_KEY_2 GIT_CONFIG_KEY_3 GIT_CONFIG_KEY_4 GIT_CONFIG_KEY_5 GIT_CONFIG_KEY_6 GIT_CONFIG_KEY_7 GIT_CONFIG_KEY_8 GIT_CONFIG_KEY_9 GIT_CONFIG_VALUE_0 GIT_CONFIG_VALUE_1 GIT_CONFIG_VALUE_2 GIT_CONFIG_VALUE_3 GIT_CONFIG_VALUE_4 GIT_CONFIG_VALUE_5 GIT_CONFIG_VALUE_6 GIT_CONFIG_VALUE_7 GIT_CONFIG_VALUE_8 GIT_CONFIG_VALUE_9 GIT_CONFIG_SYSTEM GIT_CONFIG_GLOBAL GIT_CONFIG GIT_PROXY_COMMAND GIT_SSL_NO_VERIFY GIT_ASKPASS GIT_SSH GIT_SSH_COMMAND GIT_SSH_VARIANT GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM SSH_ASKPASS SSH_AUTH_SOCK SSH_AGENT_PID GIT_TRACE GIT_TRACE_CURL GIT_TRACE_PACKET GIT_TRACE_SETUP GIT_TRACE2 GIT_TRACE2_EVENT GIT_TRACE2_PERF || true
 GIT_CONFIG_NOSYSTEM=1
 GIT_CONFIG_GLOBAL=/dev/null
 GIT_TERMINAL_PROMPT=0
@@ -31,7 +35,6 @@ trap cleanup 0
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-chmod 700 "$work_dir" || fail 'cannot protect the temporary directory'
 repo="$work_dir/repo"
 
 if ! git -c core.hooksPath=/dev/null init --quiet "$repo"; then
@@ -48,9 +51,9 @@ if ! git -c core.hooksPath=/dev/null -C "$repo" checkout --quiet --detach FETCH_
 fi
 actual_commit=$(git -c core.hooksPath=/dev/null -C "$repo" rev-parse --verify HEAD) || fail 'cannot verify the checkout'
 [ "$actual_commit" = "$reviewed_commit" ] || fail 'the fetched commit does not match the reviewed pin'
-[ -x "$repo/install.sh" ] || fail 'the reviewed local launcher is missing'
+[ -f "$repo/planning/desktop_readonly_preview.py" ] || fail 'the reviewed guided preflight is missing'
 
 PYTHONDONTWRITEBYTECODE=1
 export PYTHONDONTWRITEBYTECODE
-printf '%s\n' 'Offline Ubuntu Desktop preview only; this does not query TrueNAS or create/start a VM.' >&2
-"$repo/install.sh" --interactive --profile ubuntu-desktop
+printf 'Running guided read-only Ubuntu Desktop preflight from %s; no create/start action is exposed.\n' "$reviewed_commit" >&2
+python3 "$repo/planning/desktop_readonly_preview.py" --preview
