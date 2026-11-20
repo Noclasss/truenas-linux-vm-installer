@@ -64,6 +64,14 @@ class ReadOnlyPreflightReport:
     checks: tuple[str, ...]
     live_write_authorized: bool = False
     vm_started: bool = False
+    system_hostname: str | None = None
+    pool_free_bytes: int | None = None
+    physical_memory_bytes: int | None = None
+    available_memory_bytes: int | None = None
+    maximum_supported_vcpus: int | None = None
+    shared_parent_exists: bool | None = None
+    target_vm_name_absent: bool = False
+    target_storage_paths_absent: bool = False
 
 
 def _validate_request(request: ReadOnlyPreflightRequest) -> None:
@@ -335,4 +343,16 @@ def run_read_only_preflight(
         pool_name=request.pool_name,
         bridge_name=request.bridge_name,
         checks=checks,
+        system_hostname=(
+            system_info.get("hostname")
+            if isinstance(system_info, dict) and isinstance(system_info.get("hostname"), str)
+            else None
+        ),
+        pool_free_bytes=free_bytes,
+        physical_memory_bytes=physical_memory_bytes,
+        available_memory_bytes=available_memory_bytes,
+        maximum_supported_vcpus=maximum_vcpus,
+        shared_parent_exists=shared_type is not None,
+        target_vm_name_absent=True,
+        target_storage_paths_absent=True,
     )

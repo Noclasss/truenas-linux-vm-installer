@@ -129,24 +129,57 @@ class DesktopIntegrityTests(unittest.TestCase):
             self.assertEqual(os.stat(root).st_mode & 0o777, 0o700)
             self.assertEqual((root / "SHA256SUMS").read_bytes(), self.manifest)
             self.assertEqual(os.stat(root / "trustedkeys.gpg").st_mode & 0o777, 0o600)
-            self.assertEqual(argv[0], "gpgv")
+            self.assertEqual(argv[0], "/usr/bin/gpgv")
             self.assertEqual(kwargs["timeout"], 30)
             self.assertEqual(kwargs["env"], {"PATH": os.defpath, "LC_ALL": "C"})
             self.assertNotIn("shell", kwargs)
             return subprocess.CompletedProcess(argv, 0, status(), "")
-        with patch.object(integrity.subprocess, "run", side_effect=runner):
+        with patch.object(integrity.shutil, "which", return_value="/usr/bin/gpgv"), \
+                patch.object(integrity.subprocess, "run", side_effect=runner):
             integrity._verify_signature(self.manifest, b"signature", b"key", FINGERPRINT)
         self.assertFalse(snapshot[0].exists())
 
+    def test_gpg_fallback_uses_private_keyring_and_machine_status(self):
+        seen = []
+        def which(name, path=None):
+            return None if name == "gpgv" else "/usr/bin/gpg" if name == "gpg" else None
+        def runner(argv, **kwargs):
+            seen.append(list(argv))
+            root = Path(argv[argv.index("--homedir") + 1])
+            self.assertEqual((root / "SHA256SUMS").read_bytes(), self.manifest)
+            self.assertEqual((root / "trustedkeys.gpg").read_bytes(), b"key")
+            self.assertIn("--batch", argv)
+            self.assertIn("--no-tty", argv)
+            self.assertIn("--no-options", argv)
+            self.assertIn("--no-default-keyring", argv)
+            self.assertIn("--no-auto-key-retrieve", argv)
+            self.assertIn("--verify", argv)
+            self.assertEqual(kwargs["capture_output"], True)
+            self.assertEqual(kwargs["text"], True)
+            self.assertEqual(kwargs["timeout"], 30)
+            self.assertEqual(kwargs["env"], {"PATH": os.defpath, "LC_ALL": "C"})
+            return subprocess.CompletedProcess(argv, 0, status(), "")
+        with patch.object(integrity.shutil, "which", side_effect=which), \
+                patch.object(integrity.subprocess, "run", side_effect=runner):
+            integrity._verify_signature(self.manifest, b"signature", b"key", FINGERPRINT)
+        self.assertEqual(seen[0][0], "/usr/bin/gpg")
+
     def test_gpgv_error_timeout_and_missing_tool(self):
         for error in (FileNotFoundError(), subprocess.TimeoutExpired("gpgv", 30)):
-            with patch.object(integrity.subprocess, "run", side_effect=error), \
+            with patch.object(integrity.shutil, "which", return_value="/usr/bin/gpgv"), \
+                    patch.object(integrity.subprocess, "run", side_effect=error), \
                     self.assertRaises(integrity.DesktopIntegrityError):
                 integrity._verify_signature(self.manifest, b"signature", b"key", FINGERPRINT)
-        with patch.object(integrity.subprocess, "run",
-                          return_value=subprocess.CompletedProcess([], 1, status(), "")), \
+        with patch.object(integrity.shutil, "which", return_value="/usr/bin/gpgv"), \
+                patch.object(integrity.subprocess, "run",
+                             return_value=subprocess.CompletedProcess([], 1, status(), "")), \
                 self.assertRaises(integrity.DesktopIntegrityError):
             integrity._verify_signature(self.manifest, b"signature", b"key", FINGERPRINT)
+        with patch.object(integrity.shutil, "which", return_value=None), \
+                patch.object(integrity.subprocess, "run") as runner, \
+                self.assertRaisesRegex(integrity.DesktopIntegrityError, "unavailable"):
+            integrity._verify_signature(self.manifest, b"signature", b"key", FINGERPRINT)
+        runner.assert_not_called()
 
     def test_cli_reports_only_verified_result(self):
         args = [part for flag, path in zip(("--iso", "--manifest", "--signature", "--keyring"),
@@ -163,7 +196,7 @@ class DesktopIntegrityTests(unittest.TestCase):
         self.assertEqual(exit.exception.code, 1)
 
 
-@unittest.skipUnless(shutil.which("gpg") and shutil.which("gpgv") and shutil.which("gpgconf"),
+@unittest.skipUnless(shutil.which("gpg") and shutil.which("gpgconf"),
                      "disposable crypto round trip needs existing GnuPG tools")
 class RealSignatureTests(unittest.TestCase):
     def test_real_signature_tampering_and_wrong_identity(self):
@@ -187,11 +220,15 @@ class RealSignatureTests(unittest.TestCase):
                     "--output", str(home / "signature"), "--detach-sign", str(home / "manifest"))
                 signature = (home / "signature").read_bytes()
                 keyring = gpg("--export", fingerprint)
-                integrity._verify_signature(manifest, signature, keyring, fingerprint)
-                with self.assertRaises(integrity.DesktopIntegrityError):
-                    integrity._verify_signature(manifest + b"tampered", signature, keyring, fingerprint)
-                with self.assertRaises(integrity.DesktopIntegrityError):
-                    integrity._verify_signature(manifest, signature, keyring, FINGERPRINT)
+                gpg_path = shutil.which("gpg")
+                def use_gpg_only(name, path=None):
+                    return gpg_path if name == "gpg" else None
+                with patch.object(integrity.shutil, "which", side_effect=use_gpg_only):
+                    integrity._verify_signature(manifest, signature, keyring, fingerprint)
+                    with self.assertRaises(integrity.DesktopIntegrityError):
+                        integrity._verify_signature(manifest + b"tampered", signature, keyring, fingerprint)
+                    with self.assertRaises(integrity.DesktopIntegrityError):
+                        integrity._verify_signature(manifest, signature, keyring, FINGERPRINT)
             finally:
                 subprocess.run(["gpgconf", "--homedir", str(home), "--kill", "gpg-agent"],
                                stdin=subprocess.DEVNULL, capture_output=True, timeout=10)

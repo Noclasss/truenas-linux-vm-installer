@@ -10,15 +10,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAPPER = ROOT / "ubuntu-desktop-preview-bootstrap.sh"
+TEST_REF = "a" * 40
+BOOTSTRAP_SOURCE_REF = "bf0b64eec8e5cfc3ebdb73f3977d26a030ad6ee3"
 GIT_ENV_KEYS = (
     "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
     "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_TEMPLATE_DIR",
     "GIT_EXEC_PATH", "GIT_SSL_NO_VERIFY", "GIT_ASKPASS", "SSH_ASKPASS",
-    "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_SYSTEM",
+    *(name for index in range(11) for name in (f"GIT_CONFIG_KEY_{index}", f"GIT_CONFIG_VALUE_{index}")),
+    "GIT_CONFIG_SYSTEM",
     "GIT_CONFIG_GLOBAL", "GIT_CONFIG", "GIT_PROXY_COMMAND", "GIT_SSH",
-    "GIT_SSH_COMMAND", "GIT_CEILING_DIRECTORIES",
-    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM", "SSH_AUTH_SOCK", "SSH_AGENT_PID",
+    "GIT_TRACE", "GIT_TRACE_CURL", "GIT_TRACE_PACKET", "GIT_TRACE_SETUP",
+    "GIT_TRACE2", "GIT_TRACE2_EVENT", "GIT_TRACE2_PERF",
 )
 
 
@@ -45,7 +50,8 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(plan["storage"]["disk_bytes"], 64 * 1024**3)
         self.assertFalse(plan["vm"]["start"])
 
-    def _run_bootstrapper(self, *, revision=None, arguments=(), fail_fetch=False, git_env=None):
+    def _run_bootstrapper(self, *, revision=None, arguments=None, fail_fetch=False,
+                          fail_python=False, cancel_python=False, omit_guided=False, git_env=None):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             fake_bin = root / "bin"
@@ -58,7 +64,7 @@ class LauncherTests(unittest.TestCase):
             launch_log = root / "launch.log"
             fake_git = fake_bin / "git"
             fake_git.write_text(
-                "#!/usr/bin/env python3\n"
+                "#!/usr/bin/python3\n"
                 "import json, os, pathlib, stat, sys\n"
                 "args = sys.argv[1:]\n"
                 "git_config = []\n"
@@ -67,15 +73,20 @@ class LauncherTests(unittest.TestCase):
                 "if args and args[0] == '-C': repo, args = pathlib.Path(args[1]), args[2:]\n"
                 "command = args[0] if args else ''\n"
                 "events = json.loads(pathlib.Path(os.environ['BOOTSTRAP_TRACE']).read_text()) if pathlib.Path(os.environ['BOOTSTRAP_TRACE']).exists() else []\n"
-                "event = {'command': command, 'args': args[1:], 'config': git_config, 'git_environment': {key: os.environ.get(key) for key in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_TEMPLATE_DIR', 'GIT_EXEC_PATH', 'GIT_SSL_NO_VERIFY', 'GIT_ASKPASS', 'SSH_ASKPASS', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG', 'GIT_PROXY_COMMAND', 'GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_CEILING_DIRECTORIES', 'GIT_DISCOVERY_ACROSS_FILESYSTEM')}, 'fixed_environment': {key: os.environ.get(key) for key in ('GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT', 'GIT_LFS_SKIP_SMUDGE')}}\n"
+                "env_keys = " + repr(GIT_ENV_KEYS) + "\n"
+                "event = {'command': command, 'args': args[1:], 'config': git_config, 'git_environment': {key: os.environ.get(key) for key in env_keys}, 'fixed_environment': {key: os.environ.get(key) for key in ('GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT', 'GIT_LFS_SKIP_SMUDGE')}}\n"
                 "if command == 'init':\n"
                 "    repo = pathlib.Path(args[-1]); repo.mkdir(parents=True)\n"
                 "    event['repo'] = str(repo)\n"
                 "    event['temp_mode'] = stat.S_IMODE(repo.parent.stat().st_mode)\n"
                 "elif command == 'fetch':\n"
-                "    launcher = repo / 'install.sh'\n"
-                "    launcher.write_text('#!/bin/sh\\nprintf \\\"%s\\\\n\\\" \\\"$*\\\" > \\\"$LAUNCH_LOG\\\"\\n')\n"
-                "    launcher.chmod(0o700)\n"
+                "    launcher = repo / 'planning' / 'desktop_readonly_preview.py'\n"
+                "    launcher.parent.mkdir(parents=True)\n"
+                "    launcher.write_text('# preview stub\\n')\n"
+                "    if os.environ.get('FAKE_GIT_OMIT_GUIDED') != '1': (repo / 'planning' / 'desktop_guided_operator.py').write_text('# guided create stub\\n')\n"
+                "    config_path = os.environ.get('GIT_CONFIG_GLOBAL') or str(pathlib.Path.home() / '.gitconfig')\n"
+                "    config_text = pathlib.Path(config_path).read_text() if config_path != '/dev/null' and pathlib.Path(config_path).is_file() else ''\n"
+                "    event['effective_fetch_url'] = 'https://redirect.invalid/Noclasss/truenas-linux-vm-installer.git' if 'https://redirect.invalid/' in config_text and 'insteadOf = https://github.com/' in config_text else 'https://github.com/Noclasss/truenas-linux-vm-installer.git'\n"
                 "elif command == 'rev-parse':\n"
                 "    print(os.environ.get('FAKE_GIT_REVISION', ''))\n"
                 "events.append(event)\n"
@@ -84,6 +95,14 @@ class LauncherTests(unittest.TestCase):
                 encoding="utf-8",
             )
             fake_git.chmod(0o700)
+            fake_python = fake_bin / "python3"
+            fake_python.write_text(
+                "#!/usr/bin/python3\n"
+                "import os, pathlib, sys\n"
+                "pathlib.Path(os.environ['LAUNCH_LOG']).write_text(' '.join(sys.argv[1:]))\n",
+                encoding="utf-8",
+            )
+            fake_python.chmod(0o700)
             environment = os.environ.copy()
             environment.update({
                 "PATH": str(fake_bin) + os.pathsep + environment["PATH"],
@@ -97,6 +116,23 @@ class LauncherTests(unittest.TestCase):
                 environment["FAKE_GIT_REVISION"] = revision
             if fail_fetch:
                 environment["FAKE_GIT_FAIL_FETCH"] = "1"
+            if fail_python:
+                fake_python.write_text(
+                    fake_python.read_text(encoding="utf-8") + "if os.environ.get('FAKE_PYTHON_FAIL') == '1': sys.exit(2)\n",
+                    encoding="utf-8",
+                )
+                environment["FAKE_PYTHON_FAIL"] = "1"
+            if cancel_python:
+                fake_python.write_text(
+                    fake_python.read_text(encoding="utf-8")
+                    + "if os.environ.get('FAKE_PYTHON_CANCEL') == '1': print('Cancelled at settings review'); sys.exit(0)\n",
+                    encoding="utf-8",
+                )
+                environment["FAKE_PYTHON_CANCEL"] = "1"
+            if omit_guided:
+                environment["FAKE_GIT_OMIT_GUIDED"] = "1"
+            if arguments is None:
+                arguments = ("--ref", TEST_REF, "--preview")
             result = subprocess.run(
                 ["sh", str(BOOTSTRAPPER), *arguments],
                 text=True,
@@ -116,22 +152,21 @@ class LauncherTests(unittest.TestCase):
         self.assertFalse(Path(init_event["repo"]).parent.exists())
 
     def test_bootstrapper_checks_pinned_checkout_and_runs_only_desktop_preview(self):
-        script = BOOTSTRAPPER.read_text(encoding="utf-8")
-        match = re.search(r"^reviewed_commit='([0-9a-f]{40})'$", script, re.MULTILINE)
-        if match is None:
-            self.fail("bootstrapper must pin a full commit SHA")
-        pinned_commit = match.group(1)
+        pinned_commit = TEST_REF
         injected_git_env = {key: f"sentinel-{key}" for key in GIT_ENV_KEYS}
         injected_git_env.update({
-            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_COUNT": "11",
             "GIT_CONFIG_KEY_0": "http.sslVerify",
             "GIT_CONFIG_VALUE_0": "false",
+            "GIT_CONFIG_KEY_10": "url.https://redirect.invalid/.insteadOf",
+            "GIT_CONFIG_VALUE_10": "https://github.com/",
         })
         result, events, launched_args, remaining_temp = self._run_bootstrapper(
             revision=pinned_commit, git_env=injected_git_env,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(launched_args, "--interactive --profile ubuntu-desktop")
+        self.assertIsInstance(launched_args, str)
+        self.assertTrue(launched_args.endswith("planning/desktop_readonly_preview.py --preview"))
         self.assertTrue(any(event["command"] == "remote" and event["args"] == [
             "add", "origin", "https://github.com/Noclasss/truenas-linux-vm-installer.git"
         ] for event in events))
@@ -155,7 +190,7 @@ class LauncherTests(unittest.TestCase):
         self.assertTrue(temp_dir.name.startswith("linux-vm-desktop-preview."))
         self.assertFalse(temp_dir.exists())
         self.assertEqual(remaining_temp, [])
-        self.assertIn("preview only", result.stderr)
+        self.assertIn("read-only Ubuntu Desktop preflight", result.stderr)
 
     def test_bootstrapper_refuses_mismatched_revision_before_launch(self):
         result, events, launched_args, remaining_temp = self._run_bootstrapper(revision="0" * 40)
@@ -173,6 +208,77 @@ class LauncherTests(unittest.TestCase):
         self._assert_temp_removed(events)
         self.assertEqual(remaining_temp, [])
 
+    def test_bootstrapper_cleans_temporary_tree_after_preview_failure(self):
+        result, events, launched_args, remaining_temp = self._run_bootstrapper(
+            revision=TEST_REF,
+            fail_python=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIsInstance(launched_args, str)
+        self._assert_temp_removed(events)
+        self.assertEqual(remaining_temp, [])
+
+    def test_bootstrapper_cleans_temporary_tree_after_guided_cancel(self):
+        result, events, launched_args, remaining_temp = self._run_bootstrapper(
+            revision=TEST_REF,
+            arguments=("--ref", TEST_REF, "--create-only", "--expected-hostname", "example-host"),
+            cancel_python=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Cancelled at settings review", result.stdout)
+        self.assertIsInstance(launched_args, str)
+        self.assertIn("planning.desktop_guided_operator", launched_args)
+        self._assert_temp_removed(events)
+        self.assertEqual(remaining_temp, [])
+
+    def test_bootstrapper_create_only_forwards_settings_to_guided_operator(self):
+        result, events, launched_args, remaining_temp = self._run_bootstrapper(
+            revision=TEST_REF,
+            arguments=("--ref", TEST_REF, "--create-only", "--expected-hostname", "example-host",
+                       "--vm-name", "ExampleVm", "--pool-name", "testpool"),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsInstance(launched_args, str)
+        self.assertIn("planning.desktop_guided_operator", launched_args)
+        self.assertIn("--vm-name ExampleVm", launched_args)
+        self.assertIn("--pool-name testpool", launched_args)
+        self.assertTrue(any(event["command"] == "fetch" for event in events))
+        self._assert_temp_removed(events)
+        self.assertEqual(remaining_temp, [])
+
+    def test_bootstrapper_refuses_missing_guided_module_and_cleans_checkout(self):
+        result, events, launched_args, remaining_temp = self._run_bootstrapper(
+            revision=TEST_REF,
+            arguments=("--ref", TEST_REF, "--create-only", "--expected-hostname", "example-host"),
+            omit_guided=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("guided create operator is missing", result.stderr)
+        self.assertIsNone(launched_args)
+        self._assert_temp_removed(events)
+        self.assertEqual(remaining_temp, [])
+
+    def test_bootstrapper_ignores_hostile_global_url_rewrite(self):
+        with tempfile.TemporaryDirectory() as home:
+            Path(home, ".gitconfig").write_text(
+                '[url "https://redirect.invalid/"]\n'
+                '    insteadOf = https://github.com/\n',
+                encoding="utf-8",
+            )
+            global_config = Path(home, ".gitconfig").read_text(encoding="utf-8")
+            self.assertIn("https://redirect.invalid/", global_config)
+            self.assertIn("insteadOf = https://github.com/", global_config)
+            result, events, _, remaining_temp = self._run_bootstrapper(
+                revision=TEST_REF,
+                git_env={"HOME": home},
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        fetch_event = next(event for event in events if event["command"] == "fetch")
+        self.assertEqual(fetch_event["effective_fetch_url"], "https://github.com/Noclasss/truenas-linux-vm-installer.git")
+        self.assertEqual(fetch_event["fixed_environment"]["GIT_CONFIG_GLOBAL"], "/dev/null")
+        self._assert_temp_removed(events)
+        self.assertEqual(remaining_temp, [])
+
     def test_bootstrapper_rejects_arguments_before_network_or_checkout(self):
         result, events, launched_args, remaining_temp = self._run_bootstrapper(arguments=("--apply",))
         self.assertNotEqual(result.returncode, 0)
@@ -180,14 +286,75 @@ class LauncherTests(unittest.TestCase):
         self.assertIsNone(launched_args)
         self.assertEqual(remaining_temp, [])
 
+    def test_bootstrapper_rejects_malformed_or_missing_revision_before_network(self):
+        for arguments in (("--ref", "not-a-sha", "--preview"), ("--ref", TEST_REF)):
+            with self.subTest(arguments=arguments):
+                result, events, launched_args, remaining_temp = self._run_bootstrapper(arguments=arguments)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(events, [])
+                self.assertIsNone(launched_args)
+                self.assertEqual(remaining_temp, [])
+
     def test_bootstrapper_digest_matches_documented_one_line_pin(self):
-        digest = hashlib.sha256(BOOTSTRAPPER.read_bytes()).hexdigest()
+        fixture = ROOT / "planning" / "testdata" / "ubuntu-desktop-preview-bootstrap-bf0b64e.sh"
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            git_env = os.environ.copy()
+            for key in GIT_ENV_KEYS:
+                git_env.pop(key, None)
+            git_env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"})
+            subprocess.run(["git", "init", "-q"], cwd=repo, env=git_env, check=True)
+            subprocess.run(["git", "config", "user.name", "Launcher test"], cwd=repo, env=git_env, check=True)
+            subprocess.run(["git", "config", "user.email", "launcher-test@example.invalid"], cwd=repo, env=git_env, check=True)
+            script = repo / "ubuntu-desktop-preview-bootstrap.sh"
+            script.write_bytes(fixture.read_bytes())
+            subprocess.run(["git", "add", script.name], cwd=repo, env=git_env, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "pinned bootstrap source"], cwd=repo, env=git_env, check=True)
+            pinned_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo, env=git_env, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            script.write_bytes(script.read_bytes() + b"# changed source for mismatch case")
+            subprocess.run(["git", "commit", "-q", "-am", "change pinned source"], cwd=repo, env=git_env, check=True)
+            mismatch_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo, env=git_env, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            self.assertNotEqual(pinned_commit, mismatch_commit)
+            ancestor = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", pinned_commit, mismatch_commit],
+                cwd=repo, env=git_env, check=False,
+            )
+            self.assertEqual(ancestor.returncode, 0)
+            pinned_source = subprocess.run(
+                ["git", "show", f"{pinned_commit}:ubuntu-desktop-preview-bootstrap.sh"],
+                cwd=repo, env=git_env, check=False, capture_output=True,
+            )
+            mismatch_source = subprocess.run(
+                ["git", "show", f"{mismatch_commit}:ubuntu-desktop-preview-bootstrap.sh"],
+                cwd=repo, env=git_env, check=False, capture_output=True,
+            )
+        self.assertEqual(pinned_source.returncode, 0, pinned_source.stderr.decode("utf-8", "replace"))
+        self.assertEqual(mismatch_source.returncode, 0, mismatch_source.stderr.decode("utf-8", "replace"))
+        digest = hashlib.sha256(pinned_source.stdout).hexdigest()
+        self.assertNotEqual(hashlib.sha256(mismatch_source.stdout).hexdigest(), digest)
+        self.assertEqual(fixture.read_bytes(), pinned_source.stdout)
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn(digest, readme)
-        wrapper = next(line for line in readme.splitlines() if line.startswith("( umask "))
-        self.assertIn('mktemp -d "/tmp/linux-vm-preview.', wrapper)
+        wrapper = next(line for line in readme.splitlines() if line.startswith("( set -eu; umask 077;"))
+        ref_match = re.search(r"REF='([0-9a-f]{40})'", wrapper)
+        digest_match = re.search(r"BOOTSTRAP_SHA256='([0-9a-f]{64})'", wrapper)
+        self.assertIsNotNone(ref_match)
+        self.assertIsNotNone(digest_match)
+        assert ref_match is not None
+        assert digest_match is not None
+        self.assertEqual(ref_match.group(1), BOOTSTRAP_SOURCE_REF)
+        self.assertEqual(digest_match.group(1), digest)
+        self.assertIn('mktemp -d "/tmp/linux-vm-desktop-preview.', wrapper)
         self.assertNotIn("${TMPDIR", wrapper)
         self.assertIn("curl -fsSL --proto '=https' --proto-redir '=https'", wrapper)
+        self.assertIn('raw.githubusercontent.com/Noclasss/truenas-linux-vm-installer/$REF/', wrapper)
+        self.assertIn('sha256sum -c -', wrapper)
+        self.assertLess(wrapper.index("sha256sum -c -"), wrapper.index('sh "$d/bootstrap.sh"'))
+        self.assertIn('sh "$d/bootstrap.sh" --ref "$REF" --preview', wrapper)
+
 
     def test_desktop_launcher_keeps_source_unset_and_is_preview_only(self):
         with tempfile.TemporaryDirectory() as cwd:

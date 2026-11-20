@@ -17,7 +17,11 @@ DEFAULT_VCPUS = 2
 DEFAULT_MEMORY_MIB = 6 * 1024
 DEFAULT_DISK_GIB = 32
 CHECKSUM_MANIFEST_URL = "https://releases.ubuntu.com/26.04.1/SHA256SUMS"
+CHECKSUM_MANIFEST_SHA256 = "4adde9f7e7760a624db5821ad75679a76b9cde1e0d3e9cb2117cfe7d8043fa43"
 CHECKSUM_SIGNATURE_URL = CHECKSUM_MANIFEST_URL + ".gpg"
+CHECKSUM_SIGNATURE_SHA256 = "055292b53dffbc5387c1691e8c2357df0b4db88e7d7fd4c1b36fadf068479c5d"
+UBUNTU_ARCHIVE_KEYRING_URL = "https://archive.ubuntu.com/ubuntu/project/ubuntu-archive-keyring.gpg"
+UBUNTU_ARCHIVE_KEYRING_SHA256 = "80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31"
 SIGNING_KEY_FINGERPRINT = "843938DF228D22F7B3742BC0D94AA3F0EFE21092"
 
 
@@ -52,7 +56,7 @@ def artifact_metadata() -> dict[str, object]:
         "signing_key_fingerprint": SIGNING_KEY_FINGERPRINT,
         "integrity_status": (
             "Pinned SHA256SUMS signature and exact-size ISO bytes were verified "
-            "locally on 2026-11-17; any future staged bytes must be reverified."
+            "locally on 2026-11-19; any future staged bytes must be reverified."
         ),
         "image_format": "iso",
         "image_format_status": (
