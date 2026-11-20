@@ -200,14 +200,15 @@ class ActiveQemuProcessOwnerTests(unittest.TestCase):
 
     def test_active_qemu_owner_is_parsed_from_bounded_ps_output(self):
         process = self.process()
-        account = pwd.struct_passwd(("vm-runner", "x", 107, 107, "VM process", "/", "/usr/sbin/nologin"))
+        account = pwd.struct_passwd(("libvirt-qemu", "x", 986, 986, "VM process", "/", "/usr/sbin/nologin"))
         with (patch.object(writer_module.shutil, "which", return_value="/usr/bin/ps"),
-             patch.object(writer_module.subprocess, "Popen", return_value=process),
+             patch.object(writer_module.subprocess, "Popen", return_value=process) as popen,
              patch.object(writer_module.select, "select", return_value=([process.stdout], [], [])),
-             patch.object(writer_module.os, "read", side_effect=[b"107 vm-runner qemu-system-x86_64" + bytes([10]), b""]),
+             patch.object(writer_module.os, "read", side_effect=[b"0 qemu-ga\n986 qemu-system-x86\n", b""]),
              patch.object(writer_module.pwd, "getpwuid", return_value=account),
         ):
-            self.assertEqual(writer_module._active_qemu_process_owner(), (107, "vm-runner"))
+            self.assertEqual(writer_module._active_qemu_process_owner(), (986, "libvirt-qemu"))
+        self.assertEqual(popen.call_args.args[0], ["/usr/bin/ps", "-eo", "euid=,comm="])
         process.wait.assert_called_once()
         process.kill.assert_not_called()
 
@@ -217,16 +218,16 @@ class ActiveQemuProcessOwnerTests(unittest.TestCase):
         accounts = {100: root_account, 107: account}
         with patch.object(writer_module.pwd, "getpwuid", side_effect=accounts.get):
             self.assertEqual(
-                writer_module._parse_qemu_process_owner(b"107 vm-runner qemu-system-x86_64" + bytes([10])),
+                writer_module._parse_qemu_process_owner(b"107 qemu-system-x86_64" + bytes([10])),
                 (107, "vm-runner"),
             )
             with self.assertRaisesRegex(DesktopWriterError, "exactly one active QEMU"):
                 writer_module._parse_qemu_process_owner(
-                    b"100 root qemu-system-x86_64" + bytes([10])
-                    + b"107 vm-runner qemu-system-x86_64" + bytes([10])
+                    b"100 qemu-system-x86_64" + bytes([10])
+                    + b"107 qemu-system-x86_64" + bytes([10])
                 )
             with self.assertRaisesRegex(DesktopWriterError, "exactly one active QEMU"):
-                writer_module._parse_qemu_process_owner(b"1 root systemd" + bytes([10]))
+                writer_module._parse_qemu_process_owner(b"1 systemd" + bytes([10]))
 
     def test_qemu_inventory_output_cap_kills_process(self):
         process = self.process()

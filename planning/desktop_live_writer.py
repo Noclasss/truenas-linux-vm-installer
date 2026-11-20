@@ -231,20 +231,18 @@ def _parse_qemu_process_owner(output: bytes) -> tuple[int, str]:
     for line in text.splitlines():
         if not line.strip():
             continue
-        fields = line.split(None, 2)
-        if len(fields) != 3:
+        fields = line.split(None, 1)
+        if len(fields) != 2:
             raise DesktopWriterError("active process inventory is malformed")
-        uid_text, username, command = fields
-        if "qemu" not in command.casefold():
+        uid_text, command = fields
+        if not (command.startswith("qemu-system-") or command == "qemu-kvm"):
             continue
-        if not uid_text.isdecimal() or not username:
+        if not uid_text.isdecimal():
             raise DesktopWriterError("active QEMU process identity is malformed")
         try:
             account = pwd.getpwuid(int(uid_text))
         except (KeyError, OSError, ValueError) as exc:
             raise DesktopWriterError("active QEMU process UID is not mapped to a host account") from exc
-        if account.pw_name != username:
-            raise DesktopWriterError("active QEMU process account name and UID disagree")
         owners.add((account.pw_uid, account.pw_name))
     if len(owners) != 1:
         raise DesktopWriterError("exactly one active QEMU service-account identity is required")
@@ -261,7 +259,7 @@ def _active_qemu_process_owner() -> tuple[int, str]:
     deadline = time.monotonic() + 10
     try:
         process = subprocess.Popen(
-            [ps, "-eo", "uid=,user=,comm="], stdin=subprocess.DEVNULL,
+            [ps, "-eo", "euid=,comm="], stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             env={"PATH": os.defpath, "LC_ALL": "C"}, bufsize=0,
         )
@@ -270,10 +268,10 @@ def _active_qemu_process_owner() -> tuple[int, str]:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise subprocess.TimeoutExpired([ps, "-eo", "uid=,user=,comm="], 10)
+                raise subprocess.TimeoutExpired([ps, "-eo", "euid=,comm="], 10)
             readable, _, _ = select.select([process.stdout], [], [], remaining)
             if not readable:
-                raise subprocess.TimeoutExpired([ps, "-eo", "uid=,user=,comm="], 10)
+                raise subprocess.TimeoutExpired([ps, "-eo", "euid=,comm="], 10)
             chunk = os.read(process.stdout.fileno(), min(4096, 65537 - len(data)))
             if not chunk:
                 break
