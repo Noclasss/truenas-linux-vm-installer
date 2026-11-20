@@ -1,5 +1,7 @@
+import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -9,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAPPER = ROOT / "ubuntu-desktop-preview-bootstrap.sh"
 TEST_REF = "a" * 40
+BOOTSTRAP_SOURCE_REF = "bf0b64eec8e5cfc3ebdb73f3977d26a030ad6ee3"
 GIT_ENV_KEYS = (
     "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
     "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
@@ -214,6 +217,31 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(events, [])
                 self.assertIsNone(launched_args)
                 self.assertEqual(remaining_temp, [])
+
+    def test_bootstrapper_digest_matches_documented_one_line_pin(self):
+        digest = hashlib.sha256(BOOTSTRAPPER.read_bytes()).hexdigest()
+        pinned_script = subprocess.check_output(
+            ["git", "show", f"{BOOTSTRAP_SOURCE_REF}:ubuntu-desktop-preview-bootstrap.sh"],
+            cwd=ROOT,
+        )
+        self.assertEqual(BOOTSTRAPPER.read_bytes(), pinned_script)
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        wrapper = next(line for line in readme.splitlines() if line.startswith("( set -eu; umask 077;"))
+        ref_match = re.search(r"REF='([0-9a-f]{40})'", wrapper)
+        digest_match = re.search(r"BOOTSTRAP_SHA256='([0-9a-f]{64})'", wrapper)
+        self.assertIsNotNone(ref_match)
+        self.assertIsNotNone(digest_match)
+        assert ref_match is not None
+        assert digest_match is not None
+        self.assertEqual(ref_match.group(1), BOOTSTRAP_SOURCE_REF)
+        self.assertEqual(digest_match.group(1), digest)
+        self.assertIn('mktemp -d "/tmp/linux-vm-desktop-preview.', wrapper)
+        self.assertNotIn("${TMPDIR", wrapper)
+        self.assertIn("curl -fsSL --proto '=https' --proto-redir '=https'", wrapper)
+        self.assertIn('raw.githubusercontent.com/Noclasss/truenas-linux-vm-installer/$REF/', wrapper)
+        self.assertIn('sha256sum -c -', wrapper)
+        self.assertLess(wrapper.index("sha256sum -c -"), wrapper.index('sh "$d/bootstrap.sh"'))
+        self.assertIn('sh "$d/bootstrap.sh" --ref "$REF" --preview', wrapper)
 
 
     def test_desktop_launcher_keeps_source_unset_and_is_preview_only(self):
