@@ -20,6 +20,7 @@ from typing import Any, Callable
 import uuid
 
 from .desktop_catalogue import DesktopCatalogueError, verify_desktop_source_id
+from .desktop_autoinstall import DesktopAutoinstallError, build_desktop_autoinstall_user_data
 from .desktop_integrity import DesktopIntegrityError, verify_desktop_artifacts
 from .desktop_live_writer import (
     DesktopArtifactInputs,
@@ -56,6 +57,7 @@ _REQUIRED_FIELDS = {
     "checksum_manifest_path", "signature_path", "keyring_path", "seed_path",
     "seed_sha256", "service_account", "manifest_path",
 }
+_OPTIONAL_FIELDS = {"reported_service_account_uid", "guest_identity"}
 
 
 class OperatorWorkflowError(RuntimeError):
@@ -71,6 +73,10 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _effective_uid() -> int:
+    return os.geteuid()
+
+
 def _read_target(path: Path) -> dict[str, Any]:
     path = Path(path)
     fd = None
@@ -80,9 +86,25 @@ def _read_target(path: Path) -> dict[str, Any]:
         with os.fdopen(fd, "rb") as stream:
             fd = None
             before = os.fstat(stream.fileno())
+            effective_uid = _effective_uid()
+            allowed_owners = {0, effective_uid}
+            if effective_uid == 0:
+                sudo_uid = os.environ.get("SUDO_UID", "")
+                if re.fullmatch(r"[1-9][0-9]*", sudo_uid):
+                    try:
+                        parent = path.parent.lstat()
+                    except OSError:
+                        parent = None
+                    if (
+                        parent is not None
+                        and stat.S_ISDIR(parent.st_mode)
+                        and parent.st_uid == int(sudo_uid)
+                        and stat.S_IMODE(parent.st_mode) == 0o700
+                    ):
+                        allowed_owners.add(int(sudo_uid))
             if (
                 not stat.S_ISREG(before.st_mode)
-                or before.st_uid not in {0, os.geteuid()}
+                or before.st_uid not in allowed_owners
                 or before.st_mode & 0o077
                 or before.st_size > _MAX_TARGET_BYTES
             ):
@@ -101,7 +123,8 @@ def _read_target(path: Path) -> dict[str, Any]:
     finally:
         if fd is not None:
             os.close(fd)
-    if not isinstance(data, dict) or set(data) != _REQUIRED_FIELDS:
+    if (not isinstance(data, dict) or not _REQUIRED_FIELDS <= set(data)
+            or set(data) - _REQUIRED_FIELDS - _OPTIONAL_FIELDS):
         raise OperatorWorkflowError("target record fields do not match the reviewed schema")
     return data
 
@@ -163,6 +186,23 @@ def _validate_record_fields(record: dict[str, Any], fixture: dict[str, Any]) -> 
     account = record.get("service_account")
     if not isinstance(account, str) or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", account):
         raise OperatorWorkflowError("service_account must be an exact local account name")
+    reported_uid = record.get("reported_service_account_uid")
+    if reported_uid is not None and (type(reported_uid) is not int or reported_uid <= 0):
+        raise OperatorWorkflowError("reported_service_account_uid must be a positive integer")
+    guest = record.get("guest_identity")
+    if guest is not None:
+        fields = {"realname", "username", "locale", "keyboard_layout", "timezone"}
+        if type(guest) is not dict or set(guest) != fields or any(type(value) is not str for value in guest.values()):
+            raise OperatorWorkflowError("guest_identity fields do not match the reviewed private schema")
+        try:
+            build_desktop_autoinstall_user_data(
+                vm_name=record["vm_name"], realname=guest["realname"], username=guest["username"],
+                password_hash="$6$validation$" + "A" * 86, source_id=record["source_id"],
+                locale=guest["locale"], keyboard_layout=guest["keyboard_layout"],
+                timezone=guest["timezone"],
+            )
+        except (DesktopAutoinstallError, ValueError) as exc:
+            raise OperatorWorkflowError("guest_identity contains an invalid value") from exc
     try:
         service = pwd.getpwnam(account)
     except KeyError as exc:
@@ -198,6 +238,8 @@ def _make_writer(
         MidcltClient(timeout=120, expected_version=fixture["truenas_version"]),
         fixture, request, artifacts, manifest_path=manifest_path,
         service_account=record["service_account"], access_probe=access_probe,
+        reported_service_account_uid=record.get("reported_service_account_uid"),
+        guest_identity=record.get("guest_identity"),
         artifact_verifier=artifact_verifier, catalogue_verifier=catalogue_verifier,
         target_registry_root=TARGET_REGISTRY_ROOT,
     )
@@ -263,6 +305,8 @@ def _check_target(
         client_factory(timeout=120, expected_version=fixture["truenas_version"]),
         fixture, request, artifacts, manifest_path=manifest_path,
         service_account=record["service_account"], access_probe=access_probe,
+        reported_service_account_uid=record.get("reported_service_account_uid"),
+        guest_identity=record.get("guest_identity"),
         artifact_verifier=artifact_verifier, catalogue_verifier=catalogue_verifier,
         target_registry_root=TARGET_REGISTRY_ROOT,
     )
@@ -295,6 +339,8 @@ def _check_target(
             "pool_reserve_mib": record["pool_reserve_mib"], "network": "none",
             "source_id": record["source_id"], "cache_on_selected_pool": False,
             "service_account": record["service_account"],
+            "reported_service_account_uid": record.get("reported_service_account_uid"),
+            "guest_identity": record.get("guest_identity"),
             "manifest_path": os.fspath(manifest_path),
             "input_files": {
                 "iso": os.fspath(artifacts.iso), "checksum_manifest": os.fspath(artifacts.checksum_manifest),
@@ -305,6 +351,9 @@ def _check_target(
         "proposed_plan": writer._confirmation_plan(
             floor, iso_sha, seed_size, seed_sha, artifact_report, catalogue_report,
         ),
+        "persistent_resources_to_create": writer._confirmation_plan(
+            floor, iso_sha, seed_size, seed_sha, artifact_report, catalogue_report,
+        )["persistent_resources_to_create"],
         "verified_facts": {
             "host": {"hostname": preflight.system_hostname, "build": preflight.truenas_version,
                      "matches_target_record": True},
@@ -330,6 +379,8 @@ def _check_target(
         "state_paths": _private_state_root_state(),
         "staged_file_access": {
             "service_account": record["service_account"],
+            "operator_reported_uid": record.get("reported_service_account_uid"),
+            "live_verified_identity": writer._verified_service_account,
             "account_existence_verified": True,
             "account_nonroot_verified": True,
             "runuser_local_probe_verified": True,

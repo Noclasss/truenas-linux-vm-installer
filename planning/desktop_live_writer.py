@@ -12,9 +12,11 @@ import json
 import os
 import pwd
 import re
+import select
 import shutil
 import stat
 import subprocess
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
@@ -220,6 +222,82 @@ def _device_attributes_match(actual: Any, expected: dict[str, Any]) -> bool:
     )
 
 
+def _parse_qemu_process_owner(output: bytes) -> tuple[int, str]:
+    try:
+        text = output.decode("utf-8", "strict")
+    except UnicodeDecodeError as exc:
+        raise DesktopWriterError("active process inventory encoding is invalid") from exc
+    owners: set[tuple[int, str]] = set()
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split(None, 2)
+        if len(fields) != 3:
+            raise DesktopWriterError("active process inventory is malformed")
+        uid_text, username, command = fields
+        if "qemu" not in command.casefold():
+            continue
+        if not uid_text.isdecimal() or not username:
+            raise DesktopWriterError("active QEMU process identity is malformed")
+        try:
+            account = pwd.getpwuid(int(uid_text))
+        except (KeyError, OSError, ValueError) as exc:
+            raise DesktopWriterError("active QEMU process UID is not mapped to a host account") from exc
+        if account.pw_name != username:
+            raise DesktopWriterError("active QEMU process account name and UID disagree")
+        owners.add((account.pw_uid, account.pw_name))
+    if len(owners) != 1:
+        raise DesktopWriterError("exactly one active QEMU service-account identity is required")
+    return next(iter(owners))
+
+
+def _active_qemu_process_owner() -> tuple[int, str]:
+    """Identify the one active QEMU owner without buffering unbounded output."""
+    ps = shutil.which("ps")
+    if not ps or not os.path.isabs(ps):
+        raise DesktopWriterError("absolute ps is required to identify the active VM-process account")
+    process: subprocess.Popen[bytes] | None = None
+    data = bytearray()
+    deadline = time.monotonic() + 10
+    try:
+        process = subprocess.Popen(
+            [ps, "-eo", "uid=,user=,comm="], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env={"PATH": os.defpath, "LC_ALL": "C"}, bufsize=0,
+        )
+        if process.stdout is None:
+            raise DesktopWriterError("active QEMU process inventory could not be read")
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired([ps, "-eo", "uid=,user=,comm="], 10)
+            readable, _, _ = select.select([process.stdout], [], [], remaining)
+            if not readable:
+                raise subprocess.TimeoutExpired([ps, "-eo", "uid=,user=,comm="], 10)
+            chunk = os.read(process.stdout.fileno(), min(4096, 65537 - len(data)))
+            if not chunk:
+                break
+            data.extend(chunk)
+            if len(data) > 64 * 1024:
+                raise DesktopWriterError("active QEMU process inventory exceeded its output bound")
+        process.wait(timeout=max(0.01, deadline - time.monotonic()))
+        if process.returncode != 0:
+            raise DesktopWriterError("active QEMU process ownership query failed")
+        return _parse_qemu_process_owner(bytes(data))
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DesktopWriterError("active QEMU process ownership could not be queried") from exc
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.SubprocessError:
+                    pass
+            if process.stdout is not None:
+                process.stdout.close()
+
+
 def _verify_vm_process_account(
     service_account: str, *, runner: Callable[..., Any] | None = None,
 ) -> pwd.struct_passwd:
@@ -235,6 +313,10 @@ def _verify_vm_process_account(
     runuser = shutil.which("runuser")
     if not runuser or not os.path.isabs(runuser):
         raise DesktopWriterError("runuser is required at an absolute host PATH location for VM-process checks")
+    execute = runner or subprocess.run
+    active_uid, active_name = _active_qemu_process_owner()
+    if (active_uid, active_name) != (account.pw_uid, account.pw_name):
+        raise DesktopWriterError("selected service account does not match the active QEMU process owner")
     probe = (
         "import os; "
         f"assert os.geteuid() == {account.pw_uid}; "
@@ -283,6 +365,8 @@ class DesktopCreateOnlyWriter:
         *,
         manifest_path: Path,
         service_account: str,
+        reported_service_account_uid: int | None = None,
+        guest_identity: dict[str, str] | None = None,
         access_probe: Callable[[Path, str], bool] = _safe_read_probe,
         artifact_verifier: Callable[..., dict[str, Any]] = verify_desktop_artifacts,
         catalogue_verifier: Callable[..., dict[str, Any]] = verify_desktop_source_id,
@@ -294,6 +378,9 @@ class DesktopCreateOnlyWriter:
         self.artifacts = artifacts
         self.manifest_path = Path(manifest_path)
         self.service_account = service_account
+        self.reported_service_account_uid = reported_service_account_uid
+        self.guest_identity = dict(guest_identity) if guest_identity is not None else None
+        self._verified_service_account: dict[str, Any] | None = None
         self.access_probe = access_probe
         self.artifact_verifier = artifact_verifier
         self.catalogue_verifier = catalogue_verifier
@@ -309,7 +396,11 @@ class DesktopCreateOnlyWriter:
     def _check_inputs(self) -> tuple[dict[str, Any], dict[str, int], str, int, str, dict[str, Any], dict[str, Any]]:
         req = self.request
         self._require_root()
-        self._require_vm_process_account()
+        account = self._require_vm_process_account()
+        if (self.reported_service_account_uid is not None
+                and account.pw_uid != self.reported_service_account_uid):
+            raise DesktopWriterError("live VM-process account UID differs from the operator-reported UID")
+        self._verified_service_account = {"name": account.pw_name, "uid": account.pw_uid}
         if not _VM_NAME.fullmatch(req.vm_name) or not _POOL_NAME.fullmatch(req.pool_name):
             raise DesktopWriterError("VM or pool name is invalid")
         if (
@@ -384,6 +475,14 @@ class DesktopCreateOnlyWriter:
         self, floor: dict[str, int], iso_sha: str, seed_size: int, seed_sha: str,
         artifact_report: dict[str, Any], catalogue_report: dict[str, Any],
     ) -> dict[str, Any]:
+        shared_parent = f"{self.request.pool_name}/linux-vms"
+        vm_dataset = f"{shared_parent}/{self.request.vm_name}"
+        zvol = f"{vm_dataset}/disk0"
+        target_key = make_target_key(
+            self.request.expected_hostname, self.fixture["truenas_version"],
+            self.request.pool_name, self.request.vm_name,
+        )
+        target_guard_path = self.target_registry_root / f"{target_key}.json"
         return {
             "build": self.fixture["truenas_version"], "host": self.request.expected_hostname,
             "vm": self.request.vm_name, "pool": self.request.pool_name,
@@ -393,6 +492,11 @@ class DesktopCreateOnlyWriter:
             "disk_gib": self.request.disk_gib, "autostart": False,
             "vm_start": False, "nic_create": False, "network": "none",
             "service_account": self.service_account,
+            "service_account_identity": {
+                "operator_reported_uid": self.reported_service_account_uid,
+                "live_verified": self._verified_service_account,
+            },
+            "guest_identity": self.guest_identity,
             "source_id": self.request.source_id,
             "catalogue_sha256": catalogue_report.get("catalogue_sha256"),
             "artifact": {
@@ -406,6 +510,38 @@ class DesktopCreateOnlyWriter:
             },
             "seed": {"path": os.fspath(self.artifacts.seed), "sha256": seed_sha, "size_bytes": seed_size},
             "manifest_path": os.fspath(self.manifest_path),
+            "target_guard_path": os.fspath(target_guard_path),
+            "persistent_resources_to_create": {
+                "datasets": [
+                    {"id": shared_parent, "type": "FILESYSTEM", "create_only_if_absent": True},
+                    {"id": vm_dataset, "type": "FILESYSTEM", "create": True},
+                ],
+                "zvol": {"id": zvol, "type": "VOLUME", "size_bytes": self.request.disk_gib * 1024**3},
+                "staged_files": [
+                    {"dataset_relative_path": "ubuntu-installer.iso", "sha256": iso_sha,
+                     "size_bytes": artifact_report.get("size_bytes"), "mode": "0600"},
+                    {"dataset_relative_path": "cidata.img", "sha256": seed_sha,
+                     "size_bytes": seed_size, "mode": "0600", "sensitive": True},
+                ],
+                "vm": {"name": self.request.vm_name, "autostart": False,
+                       "state_after_create": "STOPPED", "network": "none"},
+                "devices": [
+                    {"dtype": "DISPLAY", "type": "SPICE", "bind": "127.0.0.1",
+                     "web": True, "wait": False, "resolution": "1024x768",
+                     "port": None, "web_port": None, "password": None},
+                    {"dtype": "DISK", "path": f"/dev/zvol/{zvol}",
+                     "type": "VIRTIO", "create_zvol": False},
+                    {"dtype": "CDROM", "dataset_relative_path": "ubuntu-installer.iso"},
+                    {"dtype": "RAW", "dataset_relative_path": "cidata.img",
+                     "exists": True, "boot": False, "type": "AHCI"},
+                ],
+                "private_state_files": [
+                    os.fspath(self.manifest_path), os.fspath(target_guard_path),
+                ],
+                "private_state_directories_if_absent": [
+                    os.fspath(self.manifest_path.parent), os.fspath(self.target_registry_root),
+                ],
+            },
             "capacity": floor,
         }
 
@@ -474,6 +610,8 @@ class DesktopCreateOnlyWriter:
             raise DesktopWriterError(f"target already has an operation record at {prior}; inspect it read-only before any new action")
         # Recheck after all read-only host queries and before the guard/manifest or first middleware write.
         service = self._require_vm_process_account()
+        if self._verified_service_account != {"name": service.pw_name, "uid": service.pw_uid}:
+            raise DesktopWriterError("VM-process account identity changed after confirmation; no create was attempted")
         run_id = str(uuid.uuid4())
         guard_path = self.target_registry_root / f"{target_key}.json"
         guard: dict[str, Any] = {
