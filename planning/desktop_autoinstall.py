@@ -66,10 +66,10 @@ def hash_desktop_password(
     """Hash a local prompt value with OpenSSL without putting it in argv or logs."""
     if (
         not isinstance(password, str)
-        or not 12 <= len(password) <= 128
+        or not 3 <= len(password) <= 128
         or any(ord(character) < 32 or ord(character) == 127 for character in password)
     ):
-        raise DesktopAutoinstallError("password must contain 12 to 128 printable characters")
+        raise DesktopAutoinstallError("password must contain 3 to 128 printable characters")
     if not isinstance(openssl, str) or not openssl or any(character in openssl for character in "\x00\n\r"):
         raise DesktopAutoinstallError("OpenSSL command path is invalid")
     try:

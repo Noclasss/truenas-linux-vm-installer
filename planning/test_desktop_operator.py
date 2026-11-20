@@ -432,7 +432,7 @@ raise SystemExit(operator.main(["inspect", "--manifest", sys.argv[1], "--live-in
         self.assertIn("Type PREPARE to download/build these temporary local inputs; anything else cancels: ", guided_prompts)
         self.assertEqual(operator_prompts, ["Confirm create: "])
         self.assertEqual([call.args[0] for call in getpass_mock.call_args_list], [
-            "Ubuntu guest account password (hidden): ",
+            "Ubuntu guest account password (3 to 128 printable characters, hidden): ",
             "Repeat Ubuntu guest account password (hidden): ",
         ])
         prompt_line = next(

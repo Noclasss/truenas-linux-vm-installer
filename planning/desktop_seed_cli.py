@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timezone", default="Etc/UTC")
     args = parser.parse_args(argv)
     try:
-        password = getpass.getpass("Ubuntu guest account password (hidden): ")
+        password = getpass.getpass("Ubuntu guest account password (3 to 128 printable characters, hidden): ")
         confirmation = getpass.getpass("Repeat Ubuntu guest account password (hidden): ")
         if password != confirmation:
             raise DesktopAutoinstallError("password entries do not match")

@@ -36,7 +36,7 @@ class DesktopSeedCliTests(unittest.TestCase):
                 code = desktop_seed_cli.main(argv)
             self.assertEqual(code, 0, stderr.getvalue())
             self.assertEqual(len(prompts), 2)
-            self.assertEqual(prompts[0], "Ubuntu guest account password (hidden): ")
+            self.assertEqual(prompts[0], "Ubuntu guest account password (3 to 128 printable characters, hidden): ")
             self.assertEqual(prompts[1], "Repeat Ubuntu guest account password (hidden): ")
             hash_password.assert_called_once_with(password)
             self.assertNotIn(password, repr(argv))
