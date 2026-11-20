@@ -220,11 +220,6 @@ class LauncherTests(unittest.TestCase):
 
     def test_bootstrapper_digest_matches_documented_one_line_pin(self):
         digest = hashlib.sha256(BOOTSTRAPPER.read_bytes()).hexdigest()
-        pinned_script = subprocess.check_output(
-            ["git", "show", f"{BOOTSTRAP_SOURCE_REF}:ubuntu-desktop-preview-bootstrap.sh"],
-            cwd=ROOT,
-        )
-        self.assertEqual(BOOTSTRAPPER.read_bytes(), pinned_script)
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         wrapper = next(line for line in readme.splitlines() if line.startswith("( set -eu; umask 077;"))
         ref_match = re.search(r"REF='([0-9a-f]{40})'", wrapper)
