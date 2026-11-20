@@ -296,12 +296,47 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(remaining_temp, [])
 
     def test_bootstrapper_digest_matches_documented_one_line_pin(self):
-        pinned_source = subprocess.run(
-            ["git", "show", f"{BOOTSTRAP_SOURCE_REF}:ubuntu-desktop-preview-bootstrap.sh"],
-            cwd=ROOT, check=False, capture_output=True,
-        )
+        fixture = ROOT / "planning" / "testdata" / "ubuntu-desktop-preview-bootstrap-bf0b64e.sh"
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            git_env = os.environ.copy()
+            for key in GIT_ENV_KEYS:
+                git_env.pop(key, None)
+            git_env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"})
+            subprocess.run(["git", "init", "-q"], cwd=repo, env=git_env, check=True)
+            subprocess.run(["git", "config", "user.name", "Launcher test"], cwd=repo, env=git_env, check=True)
+            subprocess.run(["git", "config", "user.email", "launcher-test@example.invalid"], cwd=repo, env=git_env, check=True)
+            script = repo / "ubuntu-desktop-preview-bootstrap.sh"
+            script.write_bytes(fixture.read_bytes())
+            subprocess.run(["git", "add", script.name], cwd=repo, env=git_env, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "pinned bootstrap source"], cwd=repo, env=git_env, check=True)
+            pinned_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo, env=git_env, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            script.write_bytes(script.read_bytes() + b"# changed source for mismatch case")
+            subprocess.run(["git", "commit", "-q", "-am", "change pinned source"], cwd=repo, env=git_env, check=True)
+            mismatch_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo, env=git_env, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            self.assertNotEqual(pinned_commit, mismatch_commit)
+            ancestor = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", pinned_commit, mismatch_commit],
+                cwd=repo, env=git_env, check=False,
+            )
+            self.assertEqual(ancestor.returncode, 0)
+            pinned_source = subprocess.run(
+                ["git", "show", f"{pinned_commit}:ubuntu-desktop-preview-bootstrap.sh"],
+                cwd=repo, env=git_env, check=False, capture_output=True,
+            )
+            mismatch_source = subprocess.run(
+                ["git", "show", f"{mismatch_commit}:ubuntu-desktop-preview-bootstrap.sh"],
+                cwd=repo, env=git_env, check=False, capture_output=True,
+            )
         self.assertEqual(pinned_source.returncode, 0, pinned_source.stderr.decode("utf-8", "replace"))
+        self.assertEqual(mismatch_source.returncode, 0, mismatch_source.stderr.decode("utf-8", "replace"))
         digest = hashlib.sha256(pinned_source.stdout).hexdigest()
+        self.assertNotEqual(hashlib.sha256(mismatch_source.stdout).hexdigest(), digest)
+        self.assertEqual(fixture.read_bytes(), pinned_source.stdout)
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         wrapper = next(line for line in readme.splitlines() if line.startswith("( set -eu; umask 077;"))
         ref_match = re.search(r"REF='([0-9a-f]{40})'", wrapper)
