@@ -8,6 +8,8 @@ A standalone project for fast deployment of new Linux Server and Desktop virtual
 
 This project is separate from the Home Assistant OS installer so Linux distributions and installation workflows can be designed without affecting HAOS.
 
+**Current publication state (2026-11-23):** The default branch includes merged PR #40 (exact-commit offline smoke and recovery-completeness checks) and PR #41 (pinned Desktop ISO signature/catalogue verification and updated preview metadata). PR #45, which adds a guarded Ubuntu Desktop operator workflow, remains open, draft, and unmerged. The default branch remains preview-only; `LIVE_PROFILE_ALLOWLIST` is empty and no live installer is released.
+
 ## Initial target
 
 The planned profiles are:
