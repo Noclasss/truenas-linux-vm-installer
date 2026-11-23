@@ -146,6 +146,8 @@ class FakeBackend:
         self.pool_reserve_bytes = pool_reserve_bytes
         self.contract_fixture = contract_fixture
         self.write_intents = ()
+        self.vm_disks = {}
+        self.media_devices = {}
 
     def _record(self, action):
         if action == self.fail_at:
@@ -279,13 +281,24 @@ class FakeBackend:
             raise RuntimeError("missing disk")
         self.resources["vm"].add(request.name)
         self.states[request.name] = "STOPPED"
+        self.vm_disks[request.name] = disk
+        self.media_devices[request.name] = [{"dtype": "DISK", "path": f"/dev/zvol/{disk}"}]
         return request.name
+
+    def _media_path(self, vm, filename):
+        if __package__:
+            from .desktop_write_contracts import media_path
+        else:
+            from desktop_write_contracts import media_path
+        return media_path(self.vm_disks[vm], filename)
 
     def attach_installer(self, vm):
         self._record("attach_installer")
+        self.media_devices[vm].append({"dtype": "CDROM", "path": self._media_path(vm, "ubuntu-installer.iso")})
 
     def attach_seed(self, vm):
         self._record("attach_seed")
+        self.media_devices[vm].append({"dtype": "RAW", "path": self._media_path(vm, "cidata.img")})
 
     def attach_display(self, vm):
         self._record("attach_display")
@@ -297,3 +310,21 @@ class FakeBackend:
     def status(self, vm):
         self._record("status")
         return self.states[vm]
+
+    def device_list(self, vm):
+        """Read back attached devices; returns copies, never live references."""
+        self._record("device_list")
+        return [dict(device) for device in self.media_devices.get(vm, [])]
+
+    def detach_media(self, vm, dtype):
+        """Remove installer media only; never deletes the media file or the VM."""
+        self._record("detach_" + dtype.lower())
+        remaining = [d for d in self.media_devices.get(vm, []) if d["dtype"] != dtype]
+        if len(remaining) == len(self.media_devices.get(vm, [])):
+            raise RuntimeError("no such device to detach")
+        self.media_devices[vm] = remaining
+
+    def simulate_guest_poweroff(self, vm):
+        """Fake-only: stands in for the guest autoinstall finishing with poweroff."""
+        self._record("guest_poweroff")
+        self.states[vm] = "STOPPED"
