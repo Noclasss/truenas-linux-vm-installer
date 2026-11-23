@@ -132,6 +132,25 @@ For a config-file preview:
 See [planner documentation](planning/README.md) for inventory checks, examples,
 tests and limitations. Preview success does not establish live compatibility.
 
+### Verified bootstrapper (preview only, unreleased)
+
+`launch.sh` is the offline bootstrapper for running the planner from one pinned
+revision without a checkout. It requires a SHA-256 digest for the archive, checks
+it before extraction, rejects links, special files and unsafe member paths, runs
+`planning/preview.py` in isolated mode from a private temporary directory, and
+removes that directory on exit. It has no default digest, never pipes remote bytes
+into a shell, and makes no TrueNAS calls.
+
+```sh
+sh launch.sh --revision <40-hex-commit> --sha256 <64-hex-archive-digest> -- --config planning/examples/vm.json
+sh launch.sh --archive ./reviewed.tar.gz --sha256 <64-hex-archive-digest> -- --interactive
+```
+
+No release revision or digest is published yet, so there is no pasteable
+TrueNAS-shell command. The digest must come from an independent review of the
+revision, not from the same download. This verifies the archive bytes only; it does
+not establish live compatibility or guest behavior.
+
 ## Operator test runbooks
 
 The [console-only test VM runbook](docs/operator-console-test-disk-attach.md) contains separate guarded TrueNAS Shell steps to attach the disposable zvol and request a no-overcommit VM start. The [NoCloud seed and console-login runbook](docs/operator-nocloud-seed-test.md) is documentation only: it requires a trusted pre-existing transfer route, leaves the VM without a NIC, and tests seed pickup on an already-booted guest—not pristine first boot. No seed was created, transferred, or attached. Neither runbook is installer functionality or evidence of guest provisioning. The console boot result is documented in [operator console boot evidence](docs/operator-console-boot-evidence.md).
