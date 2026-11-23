@@ -70,6 +70,8 @@
 
 **Gate:** launcher and preview tests pass; no live write method is reachable from preview; missing/mismatched digest fails before Python execution.
 
+**Phase 2 status (offline):** `launch.sh` refuses a missing, malformed, or mismatched SHA-256 before extraction or Python execution (`planning/test_launch.py`). `planning/test_preview_no_host_io.py` runs preview for every profile and the interactive path with subprocess, sockets, HTTP, and file writes replaced by raising guards; a control case proves the guard fires. No release revision or digest is published yet, so the paste command remains unavailable.
+
 ### Phase 3 — Create-only live flow (code-reviewed, still disabled)
 
 - Add the minimum exact-build write set for per-VM storage, image import, VM configuration, and devices; validate each payload against the exact build's positional schema immediately before writing.
