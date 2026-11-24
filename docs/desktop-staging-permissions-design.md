@@ -64,6 +64,8 @@ Tests: missing file, no user line, duplicate user lines, commented-out user, mis
 
 ## 8. Read-only preflight
 
+The same script is checked in as `scripts/staging-preflight.sh` and can be fetched at a pinned commit; see the README "Read-only staging preflight" section.
+
 Run as root on the TrueNAS host. It reads state only: no writes, no middleware calls, no VM start, and the `runuser` check runs a no-op `test -x` as the account. Save the script as `preflight.sh` and run `sh preflight.sh <pool>` (the shebang is `/bin/sh`; `bash preflight.sh <pool>` also works):
 
 ```sh
