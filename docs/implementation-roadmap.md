@@ -42,11 +42,7 @@ checks, actual ISO verification and optional read-only host preflight.
 passed unit tests, compilation, preview examples, and whitespace checks on that
 exact commit. No local tests were rerun during this documentation refresh.
 
-**Remaining Desktop gates:** independently review and implement the live writer and
-ownership/recovery integration, then validate unattended installation, poweroff and
-graphical login on an authorized disposable target. The verified catalogue IDs do not
-prove autoinstall behavior. Keep `LIVE_PROFILE_ALLOWLIST` empty until the release gates
-are met. See the [Desktop plan](plans/2026-11-16-ubuntu-desktop-quick-deploy.md).
+**Remaining Desktop gates:** the preview-only bootstrapper stages the pinned preview source and runs the offline planner; it does not query TrueNAS or create resources. Confirm the target build and fresh read-only preflight first, then independently review and implement the live writer and ownership/recovery integration. Validate unattended installation, poweroff, and graphical login only on a separately authorized disposable target. The verified catalogue IDs do not prove autoinstall behavior. Keep `LIVE_PROFILE_ALLOWLIST` empty until all release gates are met. See the [Desktop plan](plans/2026-11-16-ubuntu-desktop-quick-deploy.md).
 
 Separate operator-run synthetic conversion and Ubuntu Server console-boot evidence
 is preserved below. Neither exercised repository installer code. Conversion-probe
