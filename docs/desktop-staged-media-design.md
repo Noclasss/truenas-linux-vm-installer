@@ -29,7 +29,8 @@ Rationale:
 ## Constraints this decision does not resolve
 
 - **How bytes reach the dataset is unresolved.** Copying the verified ISO and seed into `/mnt/...` needs host-side file access. The plan forbids host writes outside an authorized disposable target, so this is a live-gate question, not an offline one.
-- **Re-verification before attach.** `planning/desktop_integrity.py::verify_staged_iso` re-hashes a staged ISO copy against the pinned size and SHA-256, with offline tests. No live writer calls it yet, and the NoCloud seed (generated, unpinned) has no equivalent check.
+- **Re-verification before attach.** `planning/desktop_integrity.py::verify_staged_iso` re-hashes a staged ISO copy against the pinned size and SHA-256, and `rehearse()` now calls it immediately before the CDROM attach (offline tests cover match, wrong size, wrong SHA-256, and missing file). No live writer exists yet, and the NoCloud seed (generated, unpinned) has no equivalent check.
+- **Known limitation: check position.** In the offline sequence the check runs after the VM and disk are created. A failed ISO check therefore aborts after VM and disk creation and leaves them for manual cleanup; nothing is rolled back or deleted automatically. Moving the check earlier needs staging before creation, which is follow-up work.
 - **Permissions.** `libvirt-qemu` must be able to read the staged files. The 2026-10-22 staging probe showed traversal and listing work but a mode-0600 file is unreadable, so staged files need an explicit read mode. Not validated on a live target.
 
 ## Offline coverage
