@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from planning import desktop_live_writer as writer_module
+from planning.desktop_integrity import seed_pin_from_file
 from planning.desktop_live_writer import (
     DesktopArtifactInputs, DesktopCreateOnlyWriter, DesktopCreateRequest,
     DesktopWriterError, WRITE_METHODS,
@@ -345,6 +346,7 @@ class DesktopLiveWriterTests(unittest.TestCase):
         writer = DesktopCreateOnlyWriter(
             client, fixture, request, artifacts,
             manifest_path=Path(directory) / "operation.json",
+            seed_pin=seed_pin_from_file(artifacts.seed),
             service_account=account,
             reported_service_account_uid=reported_service_account_uid,
             access_probe=access_probe,
@@ -569,10 +571,23 @@ class DesktopLiveWriterTests(unittest.TestCase):
     def test_insufficient_privilege_refuses_before_writes(self):
         with tempfile.TemporaryDirectory() as directory:
             writer, client, _ = self.writer(directory)
-            with self.assertRaisesRegex(DesktopWriterError, "requires an authenticated root"):
+            with patch.object(writer_module, "_effective_uid", return_value=1000), \
+                 self.assertRaisesRegex(DesktopWriterError, "requires an authenticated root"):
                 writer.create(confirmation="not relevant")
             self.assertEqual(client.writes, [])
             self.assertFalse((Path(directory) / "operation.json").exists())
+
+    def test_seed_rebuilt_after_build_pin_refuses_before_any_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, mountpoint = self.writer(directory)
+            seed = Path(directory) / "seed.img"
+            # A rebuild has the same fixed size but different bytes (new password salt).
+            seed.write_bytes(b"rebuilt seed".ljust(1024, b"\0"))
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint), \
+                 self.assertRaisesRegex(DesktopWriterError, "build-time pin"):
+                writer.create(confirmation="x")
+            self.assert_no_create_state(client, directory)
 
     def test_wrong_confirmation_refuses_before_any_write_or_manifest(self):
         with tempfile.TemporaryDirectory() as directory:

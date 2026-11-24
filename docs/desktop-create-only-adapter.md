@@ -24,5 +24,6 @@ This source review establishes the expected Beta.2 code path and schema only, no
 - Adapter implementation and fake coverage are in `planning/desktop_live_writer.py` and `planning/test_desktop_live_writer.py`.
 - **Live gate (stated once here).** `LIVE_PROFILE_ALLOWLIST` (defined in `planning/mock_install.py`) is empty on `main`, so there are no live writes: `DesktopCreateOnlyWriter.create` and `desktop_operator.py create` refuse for any profile outside it before any middleware call or confirmation prompt. The seed attach re-hashes the staged seed against the source pin (`seed_pin_from_file` / `verify_staged_seed`) immediately before `vm.device.create` and aborts with no attach on pin mismatch, wrong size, or missing file.
 - The public launcher remains preview-only.
+- A failed seed or ISO check after `vm.create` leaves the VM, disk and CDROM for manual cleanup (`reconcile_required`); nothing is rolled back or deleted automatically.
 - A passing fake or schema check does not establish target write acceptance, VM-process media access, unattended installation, poweroff, or graphical login.
 - Independent review and separately authorized disposable live validation remain required before any release or merge.

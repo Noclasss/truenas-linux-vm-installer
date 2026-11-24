@@ -25,7 +25,8 @@ from typing import Any, Callable, NoReturn
 if __package__:
     from . import ubuntu_desktop as desktop
     from .desktop_integrity import (
-        DesktopIntegrityError, seed_pin_from_file, verify_desktop_artifacts, verify_staged_seed,
+        DesktopIntegrityError, seed_pin_from_file, valid_seed_pin, verify_desktop_artifacts,
+        verify_staged_seed,
     )
     from .desktop_catalogue import verify_desktop_source_id
     from .desktop_manifest import ManifestInspectionError, find_prior_target_manifest, make_target_key
@@ -45,7 +46,8 @@ if __package__:
 else:
     import ubuntu_desktop as desktop
     from desktop_integrity import (
-        DesktopIntegrityError, seed_pin_from_file, verify_desktop_artifacts, verify_staged_seed,
+        DesktopIntegrityError, seed_pin_from_file, valid_seed_pin, verify_desktop_artifacts,
+        verify_staged_seed,
     )
     from desktop_catalogue import verify_desktop_source_id
     from desktop_manifest import ManifestInspectionError, find_prior_target_manifest, make_target_key
@@ -369,6 +371,7 @@ class DesktopCreateOnlyWriter:
         *,
         manifest_path: Path,
         service_account: str,
+        seed_pin: dict[str, Any],
         reported_service_account_uid: int | None = None,
         guest_identity: dict[str, str] | None = None,
         access_probe: Callable[[Path, str], bool] = _safe_read_probe,
@@ -382,6 +385,8 @@ class DesktopCreateOnlyWriter:
         self.artifacts = artifacts
         self.manifest_path = Path(manifest_path)
         self.service_account = service_account
+        # Build-time pin from seed_pin_from_file; the source and staged copy must match it.
+        self.seed_pin: dict[str, Any] = {"sha256": seed_pin.get("sha256"), "size_bytes": seed_pin.get("size_bytes")}
         self.reported_service_account_uid = reported_service_account_uid
         self.guest_identity = dict(guest_identity) if guest_identity is not None else None
         self._verified_service_account: dict[str, Any] | None = None
@@ -468,10 +473,12 @@ class DesktopCreateOnlyWriter:
         if iso_size != desktop.ARTIFACT_SIZE_BYTES or iso_sha != desktop.ARTIFACT_SHA256:
             raise DesktopWriterError("source ISO bytes differ from the fixed verified pin")
         try:
-            seed_pin = seed_pin_from_file(self.artifacts.seed)
+            current_pin = seed_pin_from_file(self.artifacts.seed)
         except DesktopIntegrityError as exc:
             raise DesktopWriterError("source seed image is not safely readable at the fixed seed size") from exc
-        seed_size, seed_sha = seed_pin["size_bytes"], seed_pin["sha256"]
+        if not valid_seed_pin(self.seed_pin) or current_pin != self.seed_pin:
+            raise DesktopWriterError("source seed no longer matches its build-time pin; rebuild and re-verify the seed")
+        seed_size, seed_sha = current_pin["size_bytes"], current_pin["sha256"]
         seed_info = self.artifacts.seed.lstat()
         if stat.S_IMODE(seed_info.st_mode) != 0o600:
             raise DesktopWriterError("source seed media must be private mode 0600")
@@ -572,7 +579,6 @@ class DesktopCreateOnlyWriter:
         if desktop.PROFILE_ID not in LIVE_PROFILE_ALLOWLIST:
             raise DesktopWriterError("live profile is not allowlisted; no middleware write attempted")
         preflight_dict, floor, iso_sha, seed_size, seed_sha, artifact_report, catalogue_report = self._check_inputs()
-        seed_pin = {"sha256": seed_sha, "size_bytes": seed_size}
         preflight_request = ReadOnlyPreflightRequest(**preflight_dict)
         capture = _CaptureMethodsClient(self.client)
         try:
@@ -654,7 +660,7 @@ class DesktopCreateOnlyWriter:
         manifest = {
             "format": _FORMAT, "run_id": run_id, "status": "preparing",
             "target_key": target_key,
-            "plan": plan, "plan_digest": plan_digest,
+            "plan": plan, "plan_digest": plan_digest, "seed_pin": self.seed_pin,
             "inventory_before": {"shared_parent_exists": shared_existed},
             "intended_resources": intended_resources,
             "resources": [], "files": [], "pending": None, "observations": [],
@@ -810,8 +816,7 @@ class DesktopCreateOnlyWriter:
                 stop_ambiguous(f"{label} staging/access check incomplete", exc)
 
         stage(self.artifacts.iso, staged_iso, desktop.ARTIFACT_SIZE_BYTES, iso_sha, "ISO")
-        seed_size, staged_seed_sha = _sha256_file(self.artifacts.seed)
-        stage(self.artifacts.seed, staged_seed, seed_size, staged_seed_sha, "seed")
+        stage(self.artifacts.seed, staged_seed, self.seed_pin["size_bytes"], self.seed_pin["sha256"], "seed")
 
         def query_vm(vm_id: int) -> dict[str, Any]:
             fields = ["id", "name", "memory", "cores", "vcpus", "threads", "bootloader", "enable_secure_boot", "autostart", "ensure_display_device", "display_available", "devices", "status"]
@@ -962,7 +967,7 @@ class DesktopCreateOnlyWriter:
                 if label == "seed":
                     # Re-hash the staged copy against the source pin; no attach on any mismatch.
                     try:
-                        verify_staged_seed(staged_seed, seed_pin)
+                        verify_staged_seed(staged_seed, self.seed_pin)
                     except DesktopIntegrityError as exc:
                         stop_ambiguous("staged seed failed pin verification before attach", exc)
                 pending("vm.device.create", f"{self.request.vm_name}:{label}", recorded_params)

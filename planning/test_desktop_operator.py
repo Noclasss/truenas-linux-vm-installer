@@ -82,6 +82,7 @@ class DesktopOperatorCommandTests(unittest.TestCase):
             "keyring_path": os.fspath(self.keyring),
             "seed_path": os.fspath(self.seed),
             "seed_sha256": hashlib.sha256(self.seed_bytes).hexdigest(),
+            "seed_size_bytes": len(self.seed_bytes),
             "service_account": self.account,
             "manifest_path": os.fspath(self.operations / (manifest_name or f"{uuid.uuid4()}.json")),
         }
@@ -218,11 +219,15 @@ class DesktopOperatorCommandTests(unittest.TestCase):
         fake = FakeMiddleware(self.fixture)
         with self._runtime(fake):
             phrase = self._phrase(fake)
+            calls_before = len(fake.calls)
             prompts = []
             with patch.object(operator, "LIVE_PROFILE_ALLOWLIST", frozenset()), \
-                 patch.object(writer_module, "LIVE_PROFILE_ALLOWLIST", frozenset()):
+                 patch.object(writer_module, "LIVE_PROFILE_ALLOWLIST", frozenset()), \
+                 patch.object(operator, "MidcltClient") as client_cls:
                 rc, _, err = self._run(["create", "--target", os.fspath(self.record_path)], input_value=phrase, prompts=prompts)
             self.assertEqual(rc, 1)
+            client_cls.assert_not_called()
+            self.assertEqual(len(fake.calls), calls_before)
             self.assertEqual(prompts, [])
             self.assertEqual(fake.writes, [])
             self.assertIn("not allowlisted", err)
