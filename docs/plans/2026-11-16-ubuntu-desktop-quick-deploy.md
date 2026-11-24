@@ -111,6 +111,60 @@ This plan is for a single, disposable Ubuntu Desktop guest on `TrueNAS-26.0.0-BE
 - Run all acceptance checks, secret/private-network scan, and diff review. Keep release BETA until evidence supports stronger claims.
 - Request explicit publication authorization; then publish only the reviewed feature branch/PR and verify exact remote SHA and hosted checks.
 
+### Phase 6 — Post-release extensions (planned; each item gets its own PR after the stated gate)
+
+Borrowed patterns come from [`Noclasss/haos-truenas-installer`](https://github.com/Noclasss/haos-truenas-installer) (MIT License, Copyright (c) 2026 Noclasss). Its behavior is used as design input. Any code ported from it keeps its license notice and an attribution header. Ordering: 6a waits for Phase 5 and Phase 4 evidence. 6b and 6c have no live dependency and can be reviewed offline once selected. 6d's install line waits for the Phase 5 release; its preview line already exists.
+
+#### Phase 6a — Optional NIC on an existing bridge (after Phase 5; separate PR)
+
+- Offer an opt-in NIC attached to a user-selected **existing** bridge. Enumerate bridges with read-only queries and show only healthy existing names.
+- Never create, rename, or alter a bridge, VLAN, IP address, route, firewall rule, or DNS setting. The HAOS installer refuses the same set.
+- `--no-start` is the default for the first release. It governs only starting the **installed** guest after the autoinstall power-off and media detachment are read back. The installer VM is still started for unattended install, as Phase 3 requires. Open decision: whether the installed-guest start is also disclosed in the plan.
+- Validate the NIC payload against the exact-build schema immediately before the write. Record the NIC in the manifest and read it back.
+- Fake tests: an absent, unhealthy, or non-bridge interface is refused; the only network calls are read queries; `--no-start` is the default; a start requires a read-back of the stopped state; the NIC is recorded in the manifest.
+- Update the adapter doc with the NIC section and the network boundary (a LAN-connected bridge exposes the guest to reachable services; isolation is unverified).
+- The Phase 4 test stays NIC-free. This item does not change it.
+
+**Gate:** no live NIC attachment without separate authorization that names the bridge.
+
+#### Phase 6b — Planner UX (offline; separate PR)
+
+- Disk menu presets of 32, 64, 128, and 256 GiB, plus a custom size. A custom size below the Desktop minimum is refused.
+- Defaults: 2 vCPU, memory, and 64 GiB disk.
+- Enforce the Desktop minimums on both the interactive and flag paths.
+- Pool menu lists only healthy pools, each with free and total GiB and percent free. No automatic "emptiest pool" choice.
+- **Conflict to resolve before implementation.** `planning/ubuntu_desktop.py` sets `MIN_MEMORY_MIB` and `DEFAULT_MEMORY_MIB` to 6144 MiB. The requested 4096 MiB default cannot pass an enforced 6 GiB minimum. The options are (a) default to 6144 MiB, which keeps the existing evidence, or (b) lower the minimum to 4096 MiB, which contradicts the upstream-derived minimum recorded in Phase 1. **Recommendation: (a).** Also, `DEFAULT_DISK_GIB` is 32 in code and the request says 64; that change is within the 25 GiB minimum and needs no new evidence.
+
+**Gate:** planner UX only. Writer validation does not change.
+
+#### Phase 6c — CI secret scan (offline; separate PR)
+
+- Port `scripts/scan_secrets.py` from `haos-truenas-installer` under its MIT notice, with an attribution header.
+- Add it to `planner-tests.yml` as a named step that fails the job on any finding. Output lists filenames and pattern labels only, never matched values.
+- The first run on `main` triages every finding: fix it, or record a justified allowlist entry. Do not print values.
+- Acceptance: the step passes on `main`, and a seeded fake token in a throwaway branch fails it.
+
+#### Phase 6d — README sections (offline; separate PR)
+
+Order in the Desktop section of the README:
+
+1. **Preview line.** The pinned preview command that already exists. It writes no TrueNAS resources.
+2. **Install line.** Published only after the Phase 5 release is approved. It uses the pinned bootstrapper at an immutable release revision and states the `CREATE` confirmation, the `--no-start` default, and the risks.
+3. **After install.** Console login through the TrueNAS VM console or SPICE, and finding the guest's IP address (DHCP leases or `ip addr` in the guest console). Document each step only after Phase 4 has shown it. Do not describe network access when no NIC was attached.
+
+**Gate:** the install line waits for the Phase 5 release approval.
+
+### Later — Guarded `--resume-manifest` (design doc only; starts after Phase 4 passes)
+
+- Deliverable: `docs/desktop-resume-design.md`. No code in this phase.
+- The design covers: reading the private operation manifest (`truenas-linux-desktop-create-only-v1`); verifying its owner, mode, and format; checking the exact pool, network, VM name, and sizes; and refusing if a VM with the saved name exists or any resource is ambiguous.
+- Resume requires typing `RESUME`. It creates **only** resources the manifest marks as not yet created. Each creation is read back. It never overwrites or deletes existing resources and never auto-retries an ambiguous write.
+- A `--preview --resume-manifest` mode performs no writes and prints the missing-resource list.
+- Reference: the HAOS resume writes only to the manifest-owned zvol and refuses an existing VM. This design derives the missing set from the manifest, which is a stricter rule.
+- The design lists open questions for review before any code.
+
+**Gate:** Phase 4 has passed, and the design is reviewed before any code is written.
+
 ## Current work state
 
 - The [Jarvis smoke handoff](../jarvis-smoke-tests.md) now provides an exact-commit
