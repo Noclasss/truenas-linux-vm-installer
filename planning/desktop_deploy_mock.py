@@ -4,7 +4,7 @@ This module deliberately has no TrueNAS adapter, subprocesses, or filesystem wri
 It exercises sequencing against an injected fake. It cannot deploy a real VM.
 """
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Callable, Protocol
 
 if __package__:
     from .ubuntu_desktop import STAGING_RESERVE_BYTES
@@ -55,11 +55,13 @@ def resource_names(request: DesktopRequest) -> tuple[str, str]:
     })
     return plan["vm"]["name"], plan["storage"]["disk"]
 
-def rehearse(request: DesktopRequest, backend: Backend, *, confirmation: str = "") -> tuple[str, ...]:
+def rehearse(request: DesktopRequest, backend: Backend, *, confirmation: str = "",
+             verify_staged_media: Callable[[], None] | None = None) -> tuple[str, ...]:
     """Exercise an ordered creation sequence on an injected fake only.
 
     No automatic rollback: ambiguous results must be reconciled manually.
     Starting the installer is explicit and the finished desktop is NOT started.
+    verify_staged_media re-checks the staged ISO bytes immediately before the CDROM attach.
     """
     if type(backend) is not FakeBackend:
         raise DeploymentRefused("only the built-in offline fake is permitted")
@@ -70,6 +72,8 @@ def rehearse(request: DesktopRequest, backend: Backend, *, confirmation: str = "
     backend.preflight(request)
     if backend.exists("vm", vm_name) or backend.exists("disk", disk_name):
         raise DeploymentRefused("VM or disk already exists")
+    if verify_staged_media is None:
+        raise DeploymentRefused("staged ISO verification required before CDROM attach")
     if confirmation != "CREATE":
         raise DeploymentRefused("exact CREATE confirmation required")
     events = []
@@ -103,6 +107,8 @@ def rehearse(request: DesktopRequest, backend: Backend, *, confirmation: str = "
         if backend.verify_display(vm) is not True:
             raise DeploymentRefused("explicit DISPLAY device failed read-back")
         events.append("display-device-verified")
+        verify_staged_media()
+        events.append("staged-iso-verified")
         backend.attach_installer(vm)
         events.append("installer-attached")
         backend.attach_seed(vm)
@@ -151,6 +157,8 @@ class FakeBackend:
         self.pool_reserve_bytes = pool_reserve_bytes
         self.contract_fixture = contract_fixture
         self.write_intents = ()
+        self.vm_disks = {}
+        self.media_devices = {}
 
     def _record(self, action):
         if action == self.fail_at:
@@ -285,13 +293,24 @@ class FakeBackend:
         self.resources["vm"].add(request.name)
         self.states[request.name] = "STOPPED"
         self.devices[request.name] = []
+        self.vm_disks[request.name] = disk
+        self.media_devices[request.name] = [{"dtype": "DISK", "path": f"/dev/zvol/{disk}"}]
         return request.name
+
+    def _media_path(self, vm, filename):
+        if __package__:
+            from .desktop_write_contracts import media_path
+        else:
+            from desktop_write_contracts import media_path
+        return media_path(self.vm_disks[vm], filename)
 
     def attach_installer(self, vm):
         self._record("attach_installer")
+        self.media_devices[vm].append({"dtype": "CDROM", "path": self._media_path(vm, "ubuntu-installer.iso")})
 
     def attach_seed(self, vm):
         self._record("attach_seed")
+        self.media_devices[vm].append({"dtype": "RAW", "path": self._media_path(vm, "cidata.img")})
 
     def attach_display(self, vm):
         self._record("attach_display")
@@ -314,3 +333,21 @@ class FakeBackend:
     def status(self, vm):
         self._record("status")
         return self.states[vm]
+
+    def device_list(self, vm):
+        """Read back attached devices; returns copies, never live references."""
+        self._record("device_list")
+        return [dict(device) for device in self.media_devices.get(vm, [])]
+
+    def detach_media(self, vm, dtype):
+        """Remove installer media only; never deletes the media file or the VM."""
+        self._record("detach_" + dtype.lower())
+        remaining = [d for d in self.media_devices.get(vm, []) if d["dtype"] != dtype]
+        if len(remaining) == len(self.media_devices.get(vm, [])):
+            raise RuntimeError("no such device to detach")
+        self.media_devices[vm] = remaining
+
+    def simulate_guest_poweroff(self, vm):
+        """Fake-only: stands in for the guest autoinstall finishing with poweroff."""
+        self._record("guest_poweroff")
+        self.states[vm] = "STOPPED"

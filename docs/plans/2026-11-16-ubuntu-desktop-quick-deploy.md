@@ -57,7 +57,7 @@
 - [x] Add a focused regression asserting candidate metadata, explicit unresolved gates, experimental status, stopped VM, and non-applicable preview.
 - [x] Reuse the live preflight's pool/network/name/CPU/RAM checks for Desktop with an ISO-plus-VFAT-seed capacity reserve and read-only schema validation for VM display enablement/CD-ROM/RAW media requests.
 - [x] Add offline autoinstall JSON construction, hidden-password hashing via OpenSSL stdin, deterministic NoCloud metadata, and a private mode-0600 VFAT CIDATA seed-media builder. The exact catalogue IDs are now confirmed; autoinstall behavior and guest behavior remain unverified.
-- [ ] Produce explicit offline preview output, warnings, and desktop resource defaults derived from upstream requirements; plan remains non-applicable.
+- [x] Produce explicit offline preview output, warnings, and desktop resource defaults derived from upstream requirements; plan remains non-applicable. Checked 2026-11-23: the Desktop plan reports the 6 GiB/25 GiB release minimums, the 6,484,506,624-byte ISO+seed staging reserve, seven explicit warnings, and `apply_supported` false; `test_preview.py` covers the defaults, rejections and warnings.
 - [x] Add tests proving the desktop profile is selected correctly and preview never downloads, writes files, or invokes host/API operations.
 
 **Gate:** pinned artifact bytes and catalogue IDs are verified; the desktop remains experimental until unattended provisioning and guest behavior are validated.
@@ -70,6 +70,8 @@
 - [ ] Replace the reviewed source pin only after a later code revision has been reviewed. Keep this bootstrapper preview-only; `install.sh` remains local-only and no live writer is reachable.
 
 **Gate:** launcher, preview, and bootstrapper tests must pass; the documented digest must match the script bytes, and hash/checkout mismatch must stop before Python execution. Preview must have no reachable live-write method. Passing this gate still proves no live support.
+
+**Phase 2 status (offline):** `launch.sh` refuses a missing, malformed, or mismatched SHA-256 before extraction or Python execution (`planning/test_launch.py`). `planning/test_preview_no_host_io.py` runs preview for every profile and the interactive path with subprocess, sockets, HTTP, and file writes replaced by raising guards; a control case proves the guard fires. No release revision or digest is published yet, so the paste command remains unavailable.
 
 ### Phase 3 — Create-only live flow (code-reviewed, still disabled)
 

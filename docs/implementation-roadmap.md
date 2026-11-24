@@ -1,5 +1,7 @@
 # Implementation Roadmap
 
+**Current publication state (2026-11-23):** Default branch includes merged PRs #40 and #41. PR #45 adds a guarded Ubuntu Desktop operator workflow but remains open, draft, and unmerged; it is branch-only and does not enable live installation. Keep `install.sh` preview-only and `LIVE_PROFILE_ALLOWLIST` empty until the review and live-validation gates are met.
+
 **Current state (2026-11-17):** an experimental offline planner, reusable safety
 helpers, Ubuntu Server artifact/NoCloud preparation, and Server/Desktop mock
 orchestration. PRs #38 and #39 add local signed-ISO verification tooling and exact
