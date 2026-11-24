@@ -119,7 +119,7 @@ Borrowed patterns come from [`Noclasss/haos-truenas-installer`](https://github.c
 
 - Offer an opt-in NIC attached to a user-selected **existing** bridge. Enumerate bridges with read-only queries and show only healthy existing names.
 - Never create, rename, or alter a bridge, VLAN, IP address, route, firewall rule, or DNS setting. The HAOS installer refuses the same set.
-- `--no-start` is the default for the first release. It governs only starting the **installed** guest after the autoinstall power-off and media detachment are read back. The installer VM is still started for unattended install, as Phase 3 requires. Open decision: whether the installed-guest start is also disclosed in the plan.
+- **Start behaviour (decided, disclosed).** The installer VM always boots for the unattended install, as Phase 3 requires. The plan and the confirmation screen state this. `--no-start` is the default for the first release and only stops the **installed** guest being started again after the autoinstall power-off is read back and the installer media is detached. The plan and confirmation screen also state that the installed guest is not started by default.
 - Validate the NIC payload against the exact-build schema immediately before the write. Record the NIC in the manifest and read it back.
 - Fake tests: an absent, unhealthy, or non-bridge interface is refused; the only network calls are read queries; `--no-start` is the default; a start requires a read-back of the stopped state; the NIC is recorded in the manifest.
 - Update the adapter doc with the NIC section and the network boundary (a LAN-connected bridge exposes the guest to reachable services; isolation is unverified).
@@ -130,10 +130,10 @@ Borrowed patterns come from [`Noclasss/haos-truenas-installer`](https://github.c
 #### Phase 6b — Planner UX (offline; separate PR)
 
 - Disk menu presets of 32, 64, 128, and 256 GiB, plus a custom size. A custom size below the Desktop minimum is refused.
-- Defaults: 2 vCPU, memory, and 64 GiB disk.
+- Defaults: 2 vCPU / 6144 MiB / 64 GiB. The memory default equals the Desktop minimum.
 - Enforce the Desktop minimums on both the interactive and flag paths.
 - Pool menu lists only healthy pools, each with free and total GiB and percent free. No automatic "emptiest pool" choice.
-- **Conflict to resolve before implementation.** `planning/ubuntu_desktop.py` sets `MIN_MEMORY_MIB` and `DEFAULT_MEMORY_MIB` to 6144 MiB. The requested 4096 MiB default cannot pass an enforced 6 GiB minimum. The options are (a) default to 6144 MiB, which keeps the existing evidence, or (b) lower the minimum to 4096 MiB, which contradicts the upstream-derived minimum recorded in Phase 1. **Recommendation: (a).** Also, `DEFAULT_DISK_GIB` is 32 in code and the request says 64; that change is within the 25 GiB minimum and needs no new evidence.
+- Decided: 6144 MiB is both the Desktop minimum and the default, matching `MIN_MEMORY_MIB` and `DEFAULT_MEMORY_MIB` in `planning/ubuntu_desktop.py` and the Phase 1 evidence. `DEFAULT_DISK_GIB` changes from 32 to 64; that is within the 25 GiB minimum.
 
 **Gate:** planner UX only. Writer validation does not change.
 
