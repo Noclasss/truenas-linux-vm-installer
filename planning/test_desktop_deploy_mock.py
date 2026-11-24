@@ -200,6 +200,22 @@ class StagedIsoGateTests(unittest.TestCase):
             rehearse(REQUEST, backend, confirmation="CREATE")
         self.assertFalse(any(e.startswith(("create", "attach")) for e in backend.events))
 
+    def test_media_check_failure_precedes_disk_and_vm_creation(self):
+        backend = FakeBackend()
+        with patch.object(self.mod.desktop, "ARTIFACT_SIZE_BYTES", len(self.DATA)), \
+                patch.object(self.mod.desktop, "ARTIFACT_SHA256", "0" * 64):
+            with self.assertRaises(DeploymentRefused):
+                rehearse(REQUEST, backend, confirmation="CREATE",
+                         verify_staged_media=lambda: verify_staged_iso(self.iso),
+                         seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
+        self.assertNotIn("create_disk", backend.events)
+        self.assertNotIn("create_vm", backend.events)
+
+    def test_verification_runs_before_disk_and_vm(self):
+        backend, steps = self.run_rehearsal()
+        self.assertLess(steps.index("staged-seed-verified"), steps.index("disk-created"))
+        self.assertLess(steps.index("staged-iso-verified"), steps.index("vm-created"))
+
 
 if __name__ == "__main__":
     unittest.main()

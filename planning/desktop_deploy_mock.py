@@ -96,6 +96,10 @@ def rehearse(request: DesktopRequest, backend: Backend, *, confirmation: str = "
             or created_parents != expected_created
         ):
             raise DeploymentRefused("parent dataset read-back mismatch")
+        verify_staged_media()
+        events.append("staged-iso-verified")
+        verify_seed()
+        events.append("staged-seed-verified")
         disk = backend.create_disk(request)
         events.append("disk-created")
         if (
@@ -113,10 +117,6 @@ def rehearse(request: DesktopRequest, backend: Backend, *, confirmation: str = "
         if backend.verify_display(vm) is not True:
             raise DeploymentRefused("explicit DISPLAY device failed read-back")
         events.append("display-device-verified")
-        verify_staged_media()
-        events.append("staged-iso-verified")
-        verify_seed()
-        events.append("staged-seed-verified")
         backend.attach_installer(vm)
         events.append("installer-attached")
         backend.attach_seed(vm)

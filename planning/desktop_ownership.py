@@ -298,10 +298,10 @@ def rehearse_persistent(
         if not manifest["inventory_before"]["shared_parent_exists"]:
             create("dataset", shared, lambda: backend.create_parent(shared, manifest["installation_id"]))
         create("dataset", vm_dataset, lambda: backend.create_parent(vm_dataset, manifest["installation_id"]))
-        create("zvol", zvol, lambda: backend.create_volume(zvol, manifest["installation_id"]))
-        create("vm", vm_name, lambda: backend.create_vm_record(vm_name, zvol, manifest["installation_id"]))
         verify_staged_media()
         verify_seed()
+        create("zvol", zvol, lambda: backend.create_volume(zvol, manifest["installation_id"]))
+        create("vm", vm_name, lambda: backend.create_vm_record(vm_name, zvol, manifest["installation_id"]))
         for kind in ("display", "disk", "installer", "seed", "nic"):
             create("device", f"{vm_name}:{kind}", lambda kind=kind: backend.attach(vm_name, kind, manifest["installation_id"]))
         manifest["status"] = "mock_complete_not_installed"
