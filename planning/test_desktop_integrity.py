@@ -94,6 +94,20 @@ class DesktopIntegrityTests(unittest.TestCase):
                     self.assertRaises(integrity.DesktopIntegrityError):
                 self.verify()
 
+    def test_staged_iso_reverified_against_pins(self):
+        data = b"staged-iso-bytes"
+        path = self.paths[0]
+        path.write_bytes(data)
+        with patch.object(integrity.desktop, "ARTIFACT_SIZE_BYTES", len(data)), \
+                patch.object(integrity.desktop, "ARTIFACT_SHA256", hashlib.sha256(data).hexdigest()):
+            integrity.verify_staged_iso(path)
+        with patch.object(integrity.desktop, "ARTIFACT_SIZE_BYTES", len(data)), \
+                patch.object(integrity.desktop, "ARTIFACT_SHA256", "0" * 64), \
+                self.assertRaisesRegex(integrity.DesktopIntegrityError, "SHA-256"):
+            integrity.verify_staged_iso(path)
+        with self.assertRaises(integrity.DesktopIntegrityError):
+            integrity.verify_staged_iso(path)
+
     def test_changed_image_metadata_refused(self):
         real_fstat = os.fstat
         calls = []

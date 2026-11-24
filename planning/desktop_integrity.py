@@ -153,6 +153,17 @@ def _hash_image(path: Path, expected_size: int, expected_digest: str) -> None:
             raise DesktopIntegrityError("ISO SHA-256 disagrees with the signed Desktop pin")
 
 
+def verify_staged_iso(path: Path) -> None:
+    """Re-hash a staged ISO copy against the pinned size and SHA-256 before attach.
+
+    shortcut: no live writer calls this yet; the offline fake cannot read host files, so wire it in before the first CDROM attach.
+    """
+    try:
+        _hash_image(Path(path), desktop.ARTIFACT_SIZE_BYTES, desktop.ARTIFACT_SHA256)
+    except OSError as exc:
+        raise DesktopIntegrityError("could not safely read staged ISO") from exc
+
+
 def verify_desktop_artifacts(iso: Path, manifest: Path, signature: Path,
                              keyring: Path) -> dict[str, object]:
     """Verify local bytes against fixed Desktop pins; no caller pin override.
