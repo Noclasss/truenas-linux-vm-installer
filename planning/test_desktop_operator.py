@@ -38,6 +38,7 @@ class DesktopOperatorCommandTests(unittest.TestCase):
         self.fixture = load_reviewed_desktop_fixture()
         self.iso_bytes = b"synthetic ISO bytes for offline operator rehearsal"
         self.seed_bytes = b"synthetic NoCloud seed TEST_GUEST_PASSWORD_SHOULD_NOT_LEAK"
+        self.seed_bytes += bytes(1024 - len(self.seed_bytes))
         self.iso = self.inputs / "ubuntu-desktop.iso"
         self.seed = self.inputs / "cidata.img"
         self.iso.write_bytes(self.iso_bytes)
@@ -149,6 +150,8 @@ class DesktopOperatorCommandTests(unittest.TestCase):
             stack.enter_context(patch.object(writer_module.desktop, "ARTIFACT_SIZE_BYTES", len(self.iso_bytes)))
             stack.enter_context(patch.object(writer_module.desktop, "ARTIFACT_SHA256", hashlib.sha256(self.iso_bytes).hexdigest()))
             stack.enter_context(patch.object(writer_module.desktop, "SEED_MEDIA_SIZE_BYTES", 1024))
+            stack.enter_context(patch.object(writer_module, "LIVE_PROFILE_ALLOWLIST", frozenset({writer_module.desktop.PROFILE_ID})))
+            stack.enter_context(patch.object(operator, "LIVE_PROFILE_ALLOWLIST", frozenset({writer_module.desktop.PROFILE_ID})))
             stack.enter_context(patch.object(operator, "MidcltClient", side_effect=lambda **kwargs: fake))
             stack.enter_context(patch.object(operator, "verify_desktop_artifacts", return_value={
                 "filename": writer_module.desktop.IMAGE_FILENAME,
@@ -210,6 +213,19 @@ class DesktopOperatorCommandTests(unittest.TestCase):
             self.assertEqual(inspect_rc, 1)
             self.assertTrue(inspect_err)
             self.assertFalse(self.operations.exists())
+
+    def test_empty_allowlist_refuses_create_before_prompt_or_write(self):
+        fake = FakeMiddleware(self.fixture)
+        with self._runtime(fake):
+            phrase = self._phrase(fake)
+            prompts = []
+            with patch.object(operator, "LIVE_PROFILE_ALLOWLIST", frozenset()), \
+                 patch.object(writer_module, "LIVE_PROFILE_ALLOWLIST", frozenset()):
+                rc, _, err = self._run(["create", "--target", os.fspath(self.record_path)], input_value=phrase, prompts=prompts)
+            self.assertEqual(rc, 1)
+            self.assertEqual(prompts, [])
+            self.assertEqual(fake.writes, [])
+            self.assertIn("not allowlisted", err)
 
     def test_command_rehearsal_create_display_timeout_fresh_process_inspection_and_duplicate_refusal(self):
         fake = FakeMiddleware(self.fixture, device_readback_issue="error")
@@ -342,7 +358,7 @@ raise SystemExit(operator.main(["inspect", "--manifest", sys.argv[1], "--live-in
         self.account = service_account
         guided_prompts, operator_prompts, workspace_dirs = [], [], []
         captured = {}
-        seed_bytes = b"synthetic credential-bearing seed"
+        seed_bytes = b"synthetic credential-bearing seed" + bytes(1024 - len(b"synthetic credential-bearing seed"))
         password = "TEST_ONLY_GUEST_PASSWORD_NOT_FOR_LOGS"
 
         def fake_download(url, digest, cache_dir, _max_bytes, expected_size=None):

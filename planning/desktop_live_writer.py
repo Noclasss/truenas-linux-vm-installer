@@ -24,9 +24,12 @@ from typing import Any, Callable, NoReturn
 
 if __package__:
     from . import ubuntu_desktop as desktop
-    from .desktop_integrity import verify_desktop_artifacts
+    from .desktop_integrity import (
+        DesktopIntegrityError, seed_pin_from_file, verify_desktop_artifacts, verify_staged_seed,
+    )
     from .desktop_catalogue import verify_desktop_source_id
     from .desktop_manifest import ManifestInspectionError, find_prior_target_manifest, make_target_key
+    from .mock_install import LIVE_PROFILE_ALLOWLIST
     from .installer_core.compatibility import CompatibilityError
     from .installer_core.safe_filesystem import (
         FilesystemSafetyError, atomic_replace_private_file,
@@ -41,9 +44,12 @@ if __package__:
     )
 else:
     import ubuntu_desktop as desktop
-    from desktop_integrity import verify_desktop_artifacts
+    from desktop_integrity import (
+        DesktopIntegrityError, seed_pin_from_file, verify_desktop_artifacts, verify_staged_seed,
+    )
     from desktop_catalogue import verify_desktop_source_id
     from desktop_manifest import ManifestInspectionError, find_prior_target_manifest, make_target_key
+    from mock_install import LIVE_PROFILE_ALLOWLIST
     from installer_core.compatibility import CompatibilityError
     from installer_core.safe_filesystem import (
         FilesystemSafetyError, atomic_replace_private_file,
@@ -461,9 +467,11 @@ class DesktopCreateOnlyWriter:
         iso_size, iso_sha = _sha256_file(self.artifacts.iso, desktop.ARTIFACT_SIZE_BYTES)
         if iso_size != desktop.ARTIFACT_SIZE_BYTES or iso_sha != desktop.ARTIFACT_SHA256:
             raise DesktopWriterError("source ISO bytes differ from the fixed verified pin")
-        seed_size, seed_sha = _sha256_file(self.artifacts.seed)
-        if not 0 < seed_size <= desktop.SEED_MEDIA_SIZE_BYTES:
-            raise DesktopWriterError("seed image is empty or exceeds its fixed staging cap")
+        try:
+            seed_pin = seed_pin_from_file(self.artifacts.seed)
+        except DesktopIntegrityError as exc:
+            raise DesktopWriterError("source seed image is not safely readable at the fixed seed size") from exc
+        seed_size, seed_sha = seed_pin["size_bytes"], seed_pin["sha256"]
         seed_info = self.artifacts.seed.lstat()
         if stat.S_IMODE(seed_info.st_mode) != 0o600:
             raise DesktopWriterError("source seed media must be private mode 0600")
@@ -560,7 +568,11 @@ class DesktopCreateOnlyWriter:
         )
 
     def create(self, *, confirmation: str) -> dict[str, Any]:
+        # Gate first: with the allowlist empty, nothing below (not even reads) runs.
+        if desktop.PROFILE_ID not in LIVE_PROFILE_ALLOWLIST:
+            raise DesktopWriterError("live profile is not allowlisted; no middleware write attempted")
         preflight_dict, floor, iso_sha, seed_size, seed_sha, artifact_report, catalogue_report = self._check_inputs()
+        seed_pin = {"sha256": seed_sha, "size_bytes": seed_size}
         preflight_request = ReadOnlyPreflightRequest(**preflight_dict)
         capture = _CaptureMethodsClient(self.client)
         try:
@@ -947,6 +959,12 @@ class DesktopCreateOnlyWriter:
                     "vm": vm_id,
                     "attributes": _without_device_password(attributes),
                 }]
+                if label == "seed":
+                    # Re-hash the staged copy against the source pin; no attach on any mismatch.
+                    try:
+                        verify_staged_seed(staged_seed, seed_pin)
+                    except DesktopIntegrityError as exc:
+                        stop_ambiguous("staged seed failed pin verification before attach", exc)
                 pending("vm.device.create", f"{self.request.vm_name}:{label}", recorded_params)
                 result = checked.call_write("vm.device.create", params)
                 if isinstance(result, dict) and type(result.get("id")) is int and result["id"] > 0:
