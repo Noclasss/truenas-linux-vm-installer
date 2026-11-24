@@ -57,6 +57,13 @@ class DesktopOperatorCommandTests(unittest.TestCase):
             self.account = accounts[0].pw_name
         else:
             self.skipTest("no non-root service account is available")
+        # The VM-process account comes from a configured qemu.conf user, which must name the record's account.
+        self.qemu_conf = self.root / "qemu.conf"
+        self.qemu_conf.write_text('user = "%s"\n' % (self.account,))
+        for patcher in (patch.object(writer_module, "QEMU_CONF", self.qemu_conf),
+                        patch.object(writer_module, "_active_qemu_process_owners", return_value=set())):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.record_path = self.root / "desktop-target.json"
         self.record = self._record()
         self._write_record(self.record_path, self.record)
@@ -361,6 +368,7 @@ raise SystemExit(operator.main(["inspect", "--manifest", sys.argv[1], "--live-in
             return account if name == service_account else real_getpwnam(name)
 
         self.account = service_account
+        self.qemu_conf.write_text(f'user = "{service_account}"\n')
         guided_prompts, operator_prompts, workspace_dirs = [], [], []
         captured = {}
         seed_bytes = b"synthetic credential-bearing seed" + bytes(1024 - len(b"synthetic credential-bearing seed"))
