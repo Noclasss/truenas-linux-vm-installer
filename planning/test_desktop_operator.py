@@ -24,8 +24,24 @@ from planning.desktop_write_contracts import load_reviewed_desktop_fixture
 from planning.test_desktop_live_writer import FakeMiddleware
 
 
+class DesktopOperatorAllowlistTests(unittest.TestCase):
+    def test_create_refused_before_middleware_client_when_allowlist_empty(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(operator, "LIVE_PROFILE_ALLOWLIST", frozenset()), \
+                patch.object(operator, "MidcltClient") as client_factory, \
+                redirect_stderr(io.StringIO()) as err:
+            status = operator.main(["create", "--target", str(Path(directory) / "target.json")])
+        self.assertEqual(status, 1)
+        self.assertIn("not allowlisted", err.getvalue())
+        client_factory.assert_not_called()
+
+
 class DesktopOperatorCommandTests(unittest.TestCase):
     def setUp(self):
+        for allow in (patch.object(operator, "LIVE_PROFILE_ALLOWLIST", frozenset({operator.PROFILE_ID})),
+                      patch.object(writer_module, "LIVE_PROFILE_ALLOWLIST", frozenset({operator.PROFILE_ID}))):
+            allow.start()
+            self.addCleanup(allow.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -37,7 +53,7 @@ class DesktopOperatorCommandTests(unittest.TestCase):
         self.mountpoint.mkdir(mode=0o700)
         self.fixture = load_reviewed_desktop_fixture()
         self.iso_bytes = b"synthetic ISO bytes for offline operator rehearsal"
-        self.seed_bytes = b"synthetic NoCloud seed TEST_GUEST_PASSWORD_SHOULD_NOT_LEAK"
+        self.seed_bytes = b"synthetic NoCloud seed TEST_GUEST_PASSWORD_SHOULD_NOT_LEAK".ljust(1024, b"\0")  # fills the 1024-byte test seed cap
         self.iso = self.inputs / "ubuntu-desktop.iso"
         self.seed = self.inputs / "cidata.img"
         self.iso.write_bytes(self.iso_bytes)

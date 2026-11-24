@@ -167,7 +167,7 @@ def _fixture_with_test_pins(testcase, directory):
     iso = Path(directory) / "verified-source.iso"
     seed = Path(directory) / "seed.img"
     iso_bytes = b"synthetic signed desktop image"
-    seed_bytes = b"synthetic private seed"
+    seed_bytes = b"synthetic private seed".ljust(1024, b"\0")  # fills the patched 1024-byte seed cap
     iso.write_bytes(iso_bytes)
     seed.write_bytes(seed_bytes)
     os.chmod(seed, 0o600)
@@ -311,6 +311,9 @@ class ServiceAccountPreflightTests(unittest.TestCase):
 
 class DesktopLiveWriterTests(unittest.TestCase):
     def setUp(self):
+        self._allow_patch = patch.object(writer_module, "LIVE_PROFILE_ALLOWLIST", frozenset({writer_module.desktop.PROFILE_ID}))
+        self._allow_patch.start()
+        self.addCleanup(self._allow_patch.stop)
         service_account = pwd.getpwuid(os.geteuid()).pw_name if os.geteuid() else "nobody"
         self._active_owner_patch = patch.object(
             writer_module, "_active_qemu_process_owner",
@@ -478,6 +481,54 @@ class DesktopLiveWriterTests(unittest.TestCase):
              patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint):
             result = writer.create(confirmation=self.confirmation(writer))
         return result, client, writer
+
+    def test_empty_allowlist_refuses_create_with_zero_writes(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(writer_module, "LIVE_PROFILE_ALLOWLIST", frozenset()):
+            writer, client, mountpoint = self.writer(directory)
+            with patch.object(writer, "_require_root", return_value=None), \
+                    patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint), \
+                    self.assertRaisesRegex(writer_module.DesktopWriterError, "not allowlisted"):
+                writer.create(confirmation="CREATE")
+            self.assertEqual(client.writes, [])
+
+    def test_allowlisted_profile_proceeds_in_fake(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, client, _ = self.run_writer(directory)
+            self.assertEqual(result["status"], "created_not_started_live_unverified")
+            self.assertTrue(client.writes)
+
+    def seed_fault_refused(self, directory, mutate):
+        real = writer_module.verify_staged_seed
+
+        def mutate_then_verify(path, pin):
+            mutate(Path(path))
+            return real(path, pin)
+
+        with patch.object(writer_module, "verify_staged_seed", side_effect=mutate_then_verify):
+            writer, client, mountpoint = self.writer(directory)
+            with patch.object(writer, "_require_root", return_value=None), \
+                    patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint):
+                with self.assertRaises(writer_module.DesktopWriterError):
+                    writer.create(confirmation=self.confirmation(writer))
+        seed_attaches = [params for method, params in client.writes
+                         if method == "vm.device.create" and params[0]["attributes"].get("dtype") == "RAW"]
+        self.assertEqual(seed_attaches, [])
+
+    def test_seed_wrong_size_aborts_before_seed_attach(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.seed_fault_refused(directory, lambda p: p.write_bytes(p.read_bytes() + b"x"))
+
+    def test_seed_wrong_hash_aborts_before_seed_attach(self):
+        def flip_first_byte(p):
+            data = p.read_bytes()
+            p.write_bytes(bytes([data[0] ^ 1]) + data[1:])
+        with tempfile.TemporaryDirectory() as directory:
+            self.seed_fault_refused(directory, flip_first_byte)
+
+    def test_seed_missing_file_aborts_before_seed_attach(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.seed_fault_refused(directory, lambda p: p.unlink())
 
     def test_success_exact_payloads_readbacks_and_no_display_duplicate(self):
         with tempfile.TemporaryDirectory() as directory:

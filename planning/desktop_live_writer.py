@@ -24,7 +24,8 @@ from typing import Any, Callable, NoReturn
 
 if __package__:
     from . import ubuntu_desktop as desktop
-    from .desktop_integrity import verify_desktop_artifacts
+    from .desktop_integrity import DesktopIntegrityError, verify_desktop_artifacts, verify_staged_seed
+    from .mock_install import LIVE_PROFILE_ALLOWLIST
     from .desktop_catalogue import verify_desktop_source_id
     from .desktop_manifest import ManifestInspectionError, find_prior_target_manifest, make_target_key
     from .installer_core.compatibility import CompatibilityError
@@ -41,7 +42,8 @@ if __package__:
     )
 else:
     import ubuntu_desktop as desktop
-    from desktop_integrity import verify_desktop_artifacts
+    from desktop_integrity import DesktopIntegrityError, verify_desktop_artifacts, verify_staged_seed
+    from mock_install import LIVE_PROFILE_ALLOWLIST
     from desktop_catalogue import verify_desktop_source_id
     from desktop_manifest import ManifestInspectionError, find_prior_target_manifest, make_target_key
     from installer_core.compatibility import CompatibilityError
@@ -560,7 +562,10 @@ class DesktopCreateOnlyWriter:
         )
 
     def create(self, *, confirmation: str) -> dict[str, Any]:
+        if desktop.PROFILE_ID not in LIVE_PROFILE_ALLOWLIST:
+            raise DesktopWriterError("profile is not allowlisted for live writes; no middleware write attempted")
         preflight_dict, floor, iso_sha, seed_size, seed_sha, artifact_report, catalogue_report = self._check_inputs()
+        confirmed_seed_size, confirmed_seed_sha = seed_size, seed_sha
         preflight_request = ReadOnlyPreflightRequest(**preflight_dict)
         capture = _CaptureMethodsClient(self.client)
         try:
@@ -798,8 +803,8 @@ class DesktopCreateOnlyWriter:
                 stop_ambiguous(f"{label} staging/access check incomplete", exc)
 
         stage(self.artifacts.iso, staged_iso, desktop.ARTIFACT_SIZE_BYTES, iso_sha, "ISO")
-        seed_size, staged_seed_sha = _sha256_file(self.artifacts.seed)
-        stage(self.artifacts.seed, staged_seed, seed_size, staged_seed_sha, "seed")
+        staged_seed_sha = confirmed_seed_sha
+        stage(self.artifacts.seed, staged_seed, confirmed_seed_size, staged_seed_sha, "seed")
 
         def query_vm(vm_id: int) -> dict[str, Any]:
             fields = ["id", "name", "memory", "cores", "vcpus", "threads", "bootloader", "enable_secure_boot", "autostart", "ensure_display_device", "display_available", "devices", "status"]
@@ -947,6 +952,11 @@ class DesktopCreateOnlyWriter:
                     "vm": vm_id,
                     "attributes": _without_device_password(attributes),
                 }]
+                if label == "seed":
+                    try:
+                        verify_staged_seed(staged_seed, {"sha256": confirmed_seed_sha, "size_bytes": confirmed_seed_size})
+                    except DesktopIntegrityError as exc:
+                        stop_ambiguous("staged seed failed its confirmed digest before attach; no seed attach", exc)
                 pending("vm.device.create", f"{self.request.vm_name}:{label}", recorded_params)
                 result = checked.call_write("vm.device.create", params)
                 if isinstance(result, dict) and type(result.get("id")) is int and result["id"] > 0:
