@@ -21,9 +21,19 @@ REVIEWED_BUILD = "TrueNAS-26.0.0-BETA.2"
 FIXTURE_NAME = "truenas-26.0.0-beta.2-method-contracts.json"
 _GIB = 1024**3
 
+# Installer media names inside the installer-owned VM dataset (see docs/desktop-staged-media-design.md).
+INSTALLER_ISO_NAME = "ubuntu-installer.iso"
+SEED_IMAGE_NAME = "cidata.img"
+
 
 class DesktopWriteContractError(ValueError):
     """An offline proposed write does not match the reviewed method contract."""
+
+
+def media_path(disk: str, filename: str) -> str:
+    """Host path of installer media in the VM dataset that holds the given zvol."""
+    vm_dataset = disk.rpartition("/")[0]
+    return f"/mnt/{vm_dataset}/{filename}"
 
 
 def load_reviewed_desktop_fixture() -> dict[str, Any]:
@@ -116,12 +126,12 @@ def build_desktop_write_intents(
         }]),
         ("vm.device.create", [{
             "vm": vm_id, "attributes": {
-                "dtype": "CDROM", "path": f"{media_root}/ubuntu-installer.iso",
+                "dtype": "CDROM", "path": f"{media_root}/{INSTALLER_ISO_NAME}",
             },
         }]),
         ("vm.device.create", [{
             "vm": vm_id, "attributes": {
-                "dtype": "RAW", "path": f"{media_root}/cidata.img",
+                "dtype": "RAW", "path": f"{media_root}/{SEED_IMAGE_NAME}",
                 "exists": True, "boot": False, "type": "AHCI",
             },
         }]),
