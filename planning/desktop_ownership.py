@@ -220,6 +220,7 @@ def rehearse_persistent(
     backend: PersistentFakeBackend,
     *, manifest_path: Path,
     confirmation: str,
+    verify_staged_media=None,
 ) -> str:
     """Run the fake sequence, journaling intent before each resource creation."""
     if type(backend) is not PersistentFakeBackend:
@@ -237,6 +238,8 @@ def rehearse_persistent(
         raise DeploymentRefused("target zvol already exists")
     if confirmation != "CREATE":
         raise DeploymentRefused("exact CREATE confirmation required")
+    if verify_staged_media is None:
+        raise DeploymentRefused("staged ISO verification required before CDROM attach")
 
     vm_dataset = zvol.rpartition("/")[0]
     shared = vm_dataset.rpartition("/")[0]
@@ -290,6 +293,7 @@ def rehearse_persistent(
         create("dataset", vm_dataset, lambda: backend.create_parent(vm_dataset, manifest["installation_id"]))
         create("zvol", zvol, lambda: backend.create_volume(zvol, manifest["installation_id"]))
         create("vm", vm_name, lambda: backend.create_vm_record(vm_name, zvol, manifest["installation_id"]))
+        verify_staged_media()
         for kind in ("display", "disk", "installer", "seed", "nic"):
             create("device", f"{vm_name}:{kind}", lambda kind=kind: backend.attach(vm_name, kind, manifest["installation_id"]))
         manifest["status"] = "mock_complete_not_installed"

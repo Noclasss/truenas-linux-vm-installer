@@ -8,6 +8,8 @@ A standalone project for fast deployment of new Linux Server and Desktop virtual
 
 This project is separate from the Home Assistant OS installer so Linux distributions and installation workflows can be designed without affecting HAOS.
 
+**Current publication state (2026-11-23):** The default branch includes merged PR #40 (exact-commit offline smoke and recovery-completeness checks) and PR #41 (pinned Desktop ISO signature/catalogue verification and updated preview metadata). PR #45, which adds a guarded Ubuntu Desktop operator workflow, remains open, draft, and unmerged. The default branch remains preview-only; `LIVE_PROFILE_ALLOWLIST` is empty and no live installer is released.
+
 ## Initial target
 
 The planned profiles are:
@@ -140,6 +142,25 @@ For the offline planner from a config file:
 ```
 
 See [planner documentation](planning/README.md) for the preflight inputs, exact-build/schema gates, headroom calculations, unchecked items, and limitations. Preview success does not establish write acceptance, artifact readiness, VM-process access, installation, or guest boot.
+
+### Verified bootstrapper (preview only, unreleased)
+
+`launch.sh` is the offline bootstrapper for running the planner from one pinned
+revision without a checkout. It requires a SHA-256 digest for the archive, checks
+it before extraction, rejects links, special files and unsafe member paths, runs
+`planning/preview.py` in isolated mode from a private temporary directory, and
+removes that directory on exit. It has no default digest, never pipes remote bytes
+into a shell, and makes no TrueNAS calls.
+
+```sh
+sh launch.sh --revision <40-hex-commit> --sha256 <64-hex-archive-digest> -- --config planning/examples/vm.json
+sh launch.sh --archive ./reviewed.tar.gz --sha256 <64-hex-archive-digest> -- --interactive
+```
+
+No release revision or digest is published yet, so there is no pasteable
+TrueNAS-shell command. The digest must come from an independent review of the
+revision, not from the same download. This verifies the archive bytes only; it does
+not establish live compatibility or guest behavior.
 
 ## Operator test runbooks
 
