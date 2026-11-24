@@ -280,7 +280,7 @@ def main(argv: list[str] | None = None, *, input_fn=None) -> int:
                 "checksum_manifest_path": os.fspath(inputs["manifest"]),
                 "signature_path": os.fspath(inputs["signature"]),
                 "keyring_path": os.fspath(inputs["keyring"]),
-                "seed_path": os.fspath(seed_path), "seed_sha256": seed_sha,
+                "seed_path": os.fspath(seed_path), "seed_sha256": seed_sha, "seed_size_bytes": seed_size,
                 "service_account": settings["service_account"],
                 "reported_service_account_uid": settings["reported_service_account_uid"],
                 "guest_identity": {

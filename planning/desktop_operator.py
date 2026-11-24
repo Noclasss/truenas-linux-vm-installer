@@ -57,7 +57,7 @@ _REQUIRED_FIELDS = {
     "vcpus", "memory_mib", "disk_gib", "host_reserve_mib", "pool_reserve_mib",
     "source_id", "network", "cache_on_selected_pool", "iso_path",
     "checksum_manifest_path", "signature_path", "keyring_path", "seed_path",
-    "seed_sha256", "service_account", "manifest_path",
+    "seed_sha256", "seed_size_bytes", "service_account", "manifest_path",
 }
 _OPTIONAL_FIELDS = {"reported_service_account_uid", "guest_identity"}
 
@@ -185,6 +185,8 @@ def _validate_record_fields(record: dict[str, Any], fixture: dict[str, Any]) -> 
         raise OperatorWorkflowError("source_id must be an explicit supported ISO catalogue ID")
     if not isinstance(record.get("seed_sha256"), str) or not _SHA256.fullmatch(record["seed_sha256"]):
         raise OperatorWorkflowError("seed_sha256 must be a lowercase SHA-256 from the seed build/verification output")
+    if type(record.get("seed_size_bytes")) is not int or record["seed_size_bytes"] <= 0:
+        raise OperatorWorkflowError("seed_size_bytes must be the positive size recorded at seed build time")
     account = record.get("service_account")
     if not isinstance(account, str) or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", account):
         raise OperatorWorkflowError("service_account must be an exact local account name")
@@ -229,6 +231,11 @@ def _validate_record_fields(record: dict[str, Any], fixture: dict[str, Any]) -> 
     return request, artifacts, manifest_path
 
 
+def _seed_pin(record: dict[str, Any]) -> dict[str, Any]:
+    """Build-time seed pin from the target record; the writer refuses any source that differs."""
+    return {"sha256": record["seed_sha256"], "size_bytes": record["seed_size_bytes"]}
+
+
 def _make_writer(
     record: dict[str, Any], fixture: dict[str, Any], *,
     access_probe: Callable[[Path, str], bool] = _safe_read_probe,
@@ -240,6 +247,7 @@ def _make_writer(
         MidcltClient(timeout=120, expected_version=fixture["truenas_version"]),
         fixture, request, artifacts, manifest_path=manifest_path,
         service_account=record["service_account"], access_probe=access_probe,
+        seed_pin=_seed_pin(record),
         reported_service_account_uid=record.get("reported_service_account_uid"),
         guest_identity=record.get("guest_identity"),
         artifact_verifier=artifact_verifier, catalogue_verifier=catalogue_verifier,
@@ -307,6 +315,7 @@ def _check_target(
         client_factory(timeout=120, expected_version=fixture["truenas_version"]),
         fixture, request, artifacts, manifest_path=manifest_path,
         service_account=record["service_account"], access_probe=access_probe,
+        seed_pin=_seed_pin(record),
         reported_service_account_uid=record.get("reported_service_account_uid"),
         guest_identity=record.get("guest_identity"),
         artifact_verifier=artifact_verifier, catalogue_verifier=catalogue_verifier,
@@ -466,15 +475,15 @@ def main(argv: list[str] | None = None, *, input_fn: Callable[[str], str] | None
                      "seed": {"path": os.fspath(artifacts.seed), "sha256": seed_sha, "size_bytes": seed_size, "mode": "0600"},
                      "manifest_path": os.fspath(manifest_path), "manifest_exists": manifest_path.exists()})
             return 0
+        if args.action == "create" and PROFILE_ID not in LIVE_PROFILE_ALLOWLIST:
+            # Refuse before _check_target so no middleware client is constructed or called.
+            raise OperatorWorkflowError("create refused: live profile is not allowlisted; no middleware contact, confirmation prompt, or write")
         report, writer, _ = _check_target(args.target)
         if args.action == "check":
             writer.client.close()
             _output(report)
             return 0
         if args.action == "create":
-            if PROFILE_ID not in LIVE_PROFILE_ALLOWLIST:
-                writer.client.close()
-                raise OperatorWorkflowError("create refused: live profile is not allowlisted; no confirmation prompt or middleware write")
             _output(report, stream=sys.stderr)
             if not injected_input and not sys.stdin.isatty():
                 writer.client.close()
