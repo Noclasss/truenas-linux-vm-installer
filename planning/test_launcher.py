@@ -189,6 +189,26 @@ class LauncherTests(unittest.TestCase):
         self.assertNotIn("${TMPDIR", wrapper)
         self.assertIn("curl -fsSL --proto '=https' --proto-redir '=https'", wrapper)
 
+    def test_desktop_launcher_keeps_source_unset_and_is_preview_only(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            result = subprocess.run(
+                [str(ROOT / "install.sh"), "--interactive", "--profile", "ubuntu-desktop"],
+                input="preview-desktop\npreviewpool\npreviewbr\n\n\n\n",
+                text=True,
+                capture_output=True,
+                cwd=cwd,
+                check=False,
+                timeout=15,
+            )
+            self.assertEqual(list(Path(cwd).iterdir()), [])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = json.loads(result.stdout)
+        self.assertEqual(plan["profile"]["id"], "ubuntu-desktop")
+        self.assertIsNone(plan["guest_bootstrap"]["provisioning"]["desktop_source_id"])
+        self.assertFalse(plan["apply_supported"])
+        self.assertFalse(plan["vm"]["start"])
+        self.assertFalse(plan["vm"]["autostart"])
+        self.assertFalse(plan["network"]["modify_host_network"])
 
 if __name__ == "__main__":
     unittest.main()
