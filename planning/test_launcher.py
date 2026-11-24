@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAPPER = ROOT / "ubuntu-desktop-preview-bootstrap.sh"
 TEST_REF = "a" * 40
-BOOTSTRAP_SOURCE_REF = "bf0b64eec8e5cfc3ebdb73f3977d26a030ad6ee3"
+BOOTSTRAP_SOURCE_REF = "1b6952082de3cbaa1798457a515be487bf6dd65a"
 GIT_ENV_KEYS = (
     "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
     "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
@@ -296,7 +296,7 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(remaining_temp, [])
 
     def test_bootstrapper_digest_matches_documented_one_line_pin(self):
-        fixture = ROOT / "planning" / "testdata" / "ubuntu-desktop-preview-bootstrap-bf0b64e.sh"
+        fixture = ROOT / "planning" / "testdata" / "ubuntu-desktop-preview-bootstrap-1b69520.sh"
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             git_env = os.environ.copy()
