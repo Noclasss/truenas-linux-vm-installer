@@ -6,11 +6,11 @@ import json
 import os
 import pwd
 import stat
+import subprocess
 import tempfile
-import traceback
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from planning import desktop_live_writer as writer_module
 from planning.desktop_live_writer import (
@@ -20,13 +20,13 @@ from planning.desktop_live_writer import (
 from planning.desktop_write_contracts import load_reviewed_desktop_fixture
 
 _GIB = 1024**3
-_TEST_DISPLAY_PASSWORD = "SYNTHETIC_ONLY_SPICE_TEST_PASSWORD"
 
 
 class FakeMiddleware:
     def __init__(self, fixture, *, failure=None, wrong_readback_at=None, display_count=0, healthy=True,
-                 fail_vm_readback=False, device_readback_issue=None):
+                 fail_vm_readback=False, device_readback_issue=None, hostname="fakehost"):
         self.fixture = fixture
+        self.hostname = hostname
         self.failure = failure  # (operation index, "before" | "after")
         self.wrong_readback_at = wrong_readback_at
         self.display_count = display_count
@@ -85,7 +85,7 @@ class FakeMiddleware:
         if method == "vm.maximum_supported_vcpus":
             return 8
         if method == "system.info":
-            return {"physmem": 64 * 1024**3}
+            return {"hostname": self.hostname, "physmem": 64 * 1024**3}
         if method == "vm.get_available_memory":
             return 32 * 1024 * 1024**2
 
@@ -111,6 +111,9 @@ class FakeMiddleware:
         if self.failure == (index, "after"):
             raise TimeoutError("synthetic applied write with lost response")
         return result
+
+    def close(self):
+        return None
 
     def _apply(self, method, params):
         payload = params[0]
@@ -182,20 +185,147 @@ def _fixture_with_test_pins(testcase, directory):
         memory_mib=6144, disk_gib=32, host_reserve_mib=1024,
         pool_reserve_mib=1024, source_id="ubuntu-desktop-minimal",
         cache_on_selected_pool=False, bridge_name=None,
+        expected_hostname="fakehost",
     )
     return request, artifacts
 
 
+class ActiveQemuProcessOwnerTests(unittest.TestCase):
+    def process(self):
+        process = Mock()
+        process.stdout.fileno.return_value = 41
+        process.poll.return_value = 0
+        process.returncode = 0
+        return process
+
+    def test_active_qemu_owner_is_parsed_from_bounded_ps_output(self):
+        process = self.process()
+        account = pwd.struct_passwd(("libvirt-qemu", "x", 986, 986, "VM process", "/", "/usr/sbin/nologin"))
+        with (patch.object(writer_module.shutil, "which", return_value="/usr/bin/ps"),
+             patch.object(writer_module.subprocess, "Popen", return_value=process) as popen,
+             patch.object(writer_module.select, "select", return_value=([process.stdout], [], [])),
+             patch.object(writer_module.os, "read", side_effect=[b"0 qemu-ga\n986 qemu-system-x86\n", b""]),
+             patch.object(writer_module.pwd, "getpwuid", return_value=account),
+        ):
+            self.assertEqual(writer_module._active_qemu_process_owner(), (986, "libvirt-qemu"))
+        self.assertEqual(popen.call_args.args[0], ["/usr/bin/ps", "-eo", "euid=,comm="])
+        process.wait.assert_called_once()
+        process.kill.assert_not_called()
+
+    def test_qemu_inventory_must_have_one_mapped_owner(self):
+        account = pwd.struct_passwd(("vm-runner", "x", 107, 107, "VM process", "/", "/usr/sbin/nologin"))
+        root_account = pwd.struct_passwd(("root", "x", 100, 0, "root", "/root", "/bin/sh"))
+        accounts = {100: root_account, 107: account}
+        with patch.object(writer_module.pwd, "getpwuid", side_effect=accounts.get):
+            self.assertEqual(
+                writer_module._parse_qemu_process_owner(b"107 qemu-system-x86_64" + bytes([10])),
+                (107, "vm-runner"),
+            )
+            with self.assertRaisesRegex(DesktopWriterError, "exactly one active QEMU"):
+                writer_module._parse_qemu_process_owner(
+                    b"100 qemu-system-x86_64" + bytes([10])
+                    + b"107 qemu-system-x86_64" + bytes([10])
+                )
+            with self.assertRaisesRegex(DesktopWriterError, "exactly one active QEMU"):
+                writer_module._parse_qemu_process_owner(b"1 systemd" + bytes([10]))
+
+    def test_qemu_inventory_output_cap_kills_process(self):
+        process = self.process()
+        process.poll.return_value = None
+        with (patch.object(writer_module.shutil, "which", return_value="/usr/bin/ps"),
+             patch.object(writer_module.subprocess, "Popen", return_value=process),
+             patch.object(writer_module.select, "select", return_value=([process.stdout], [], [])),
+             patch.object(writer_module.os, "read", side_effect=[b"x" * 4096] * 16 + [b"x"]),
+        ):
+            with self.assertRaisesRegex(DesktopWriterError, "output bound"):
+                writer_module._active_qemu_process_owner()
+        process.kill.assert_called_once()
+
+
+class ServiceAccountPreflightTests(unittest.TestCase):
+    def account(self, *, uid=107, gid=107):
+        return pwd.struct_passwd((
+            "vm-runner", "x", uid, gid, "VM process", "/", "/usr/sbin/nologin",
+        ))
+
+    def test_missing_service_account_is_rejected_before_runuser(self):
+        with patch.object(writer_module.pwd, "getpwnam", side_effect=KeyError("missing")), \
+             patch.object(writer_module.shutil, "which") as which, \
+             patch.object(writer_module.subprocess, "run") as run:
+            with self.assertRaisesRegex(DesktopWriterError, "service account is unavailable"):
+                writer_module._verify_vm_process_account("vm-runner")
+        which.assert_not_called()
+        run.assert_not_called()
+
+    def test_root_cannot_be_selected_as_vm_process_account(self):
+        with patch.object(writer_module.pwd, "getpwnam", return_value=self.account(uid=0, gid=0)), \
+             patch.object(writer_module.shutil, "which") as which, \
+             patch.object(writer_module.subprocess, "run") as run:
+            with self.assertRaisesRegex(DesktopWriterError, "must be a non-root"):
+                writer_module._verify_vm_process_account("vm-runner")
+        which.assert_not_called()
+        run.assert_not_called()
+
+    def test_missing_runuser_is_rejected(self):
+        with patch.object(writer_module.pwd, "getpwnam", return_value=self.account()), \
+             patch.object(writer_module.shutil, "which", return_value=None), \
+             patch.object(writer_module.subprocess, "run") as run:
+            with self.assertRaisesRegex(DesktopWriterError, "runuser is required"):
+                writer_module._verify_vm_process_account("vm-runner")
+        run.assert_not_called()
+
+    def test_runuser_must_execute_the_local_probe_successfully(self):
+        completed = subprocess.CompletedProcess(args=[], returncode=0)
+        with patch.object(writer_module.pwd, "getpwnam", return_value=self.account()), \
+             patch.object(writer_module.shutil, "which", return_value="/usr/sbin/runuser"), \
+             patch.object(writer_module.subprocess, "run", return_value=completed) as run:
+            with patch.object(writer_module, "_active_qemu_process_owner", return_value=(107, "vm-runner")):
+                account = writer_module._verify_vm_process_account("vm-runner")
+        self.assertEqual(account.pw_uid, 107)
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:4], ["/usr/sbin/runuser", "-u", "vm-runner", "--"])
+        self.assertEqual(argv[4], "python3")
+        self.assertIn("/dev/null", argv[-1])
+        self.assertEqual(run.call_args.kwargs["env"]["PATH"], os.defpath)
+
+    def test_active_qemu_owner_must_match_selected_service_account(self):
+        with (
+            patch.object(writer_module.pwd, "getpwnam", return_value=self.account()),
+            patch.object(writer_module.shutil, "which", return_value="/usr/sbin/runuser"),
+            patch.object(writer_module, "_active_qemu_process_owner", return_value=(108, "vm-runner")),
+            patch.object(writer_module.subprocess, "run") as run,
+        ):
+            with self.assertRaisesRegex(DesktopWriterError, "does not match the active QEMU"):
+                writer_module._verify_vm_process_account("vm-runner")
+        run.assert_not_called()
+
+    def test_runuser_failure_is_a_prerequisite_refusal(self):
+        completed = subprocess.CompletedProcess(args=[], returncode=1)
+        with patch.object(writer_module.pwd, "getpwnam", return_value=self.account()), \
+             patch.object(writer_module.shutil, "which", return_value="/usr/sbin/runuser"), \
+             patch.object(writer_module.subprocess, "run", return_value=completed):
+            with patch.object(writer_module, "_active_qemu_process_owner", return_value=(107, "vm-runner")):
+                with self.assertRaisesRegex(DesktopWriterError, "cannot execute local checks"):
+                    writer_module._verify_vm_process_account("vm-runner")
+
+
 class DesktopLiveWriterTests(unittest.TestCase):
     def setUp(self):
-        self.display_password_prompt = patch.object(
-            writer_module.getpass, "getpass", return_value=_TEST_DISPLAY_PASSWORD
+        service_account = pwd.getpwuid(os.geteuid()).pw_name if os.geteuid() else "nobody"
+        self._active_owner_patch = patch.object(
+            writer_module, "_active_qemu_process_owner",
+            return_value=(pwd.getpwnam(service_account).pw_uid, service_account),
         )
-        self.display_password_prompt.start()
-        self.addCleanup(self.display_password_prompt.stop)
+        self._active_owner_patch.start()
+        self.addCleanup(self._active_owner_patch.stop)
+        completed = subprocess.CompletedProcess(args=[], returncode=0)
+        self._runuser_patch = patch.object(writer_module.subprocess, "run", return_value=completed)
+        self._runuser_patch.start()
+        self.addCleanup(self._runuser_patch.stop)
 
     def writer(self, directory, *, failure=None, wrong_readback_at=None, display_count=0, healthy=True,
-               access_probe=None, fail_vm_readback=False, device_readback_issue=None):
+               access_probe=None, fail_vm_readback=False, device_readback_issue=None,
+               reported_service_account_uid=None):
         fixture = load_reviewed_desktop_fixture()
         request, artifacts = _fixture_with_test_pins(self, directory)
         client = FakeMiddleware(fixture, failure=failure, wrong_readback_at=wrong_readback_at,
@@ -204,17 +334,28 @@ class DesktopLiveWriterTests(unittest.TestCase):
                                 device_readback_issue=device_readback_issue)
         if access_probe is None:
             access_probe = lambda path, user: True
-        account = pwd.getpwuid(os.geteuid()).pw_name
+        account = pwd.getpwuid(os.geteuid()).pw_name if os.geteuid() else "nobody"
         mountpoint = Path(directory) / "per-vm-dataset"
         mountpoint.mkdir(mode=0o700, exist_ok=True)
         writer = DesktopCreateOnlyWriter(
             client, fixture, request, artifacts,
             manifest_path=Path(directory) / "operation.json",
             service_account=account,
+            reported_service_account_uid=reported_service_account_uid,
             access_probe=access_probe,
+            target_registry_root=Path(directory) / "targets",
             artifact_verifier=lambda *args: {
+                "filename": writer_module.desktop.IMAGE_FILENAME,
+                "sha256": writer_module.desktop.ARTIFACT_SHA256,
+                "size_bytes": writer_module.desktop.ARTIFACT_SIZE_BYTES,
+                "signing_key_fingerprint": writer_module.desktop.SIGNING_KEY_FINGERPRINT,
+                "manifest_sha256": "b" * 64,
                 "signature_verified": True, "iso_bytes_verified": True,
                 "live_install_allowed": False,
+            },
+            catalogue_verifier=lambda *args: {
+                "verified_from_iso": True, "source_id": "ubuntu-desktop-minimal",
+                "source_ids": ["ubuntu-desktop-minimal"], "catalogue_sha256": "a" * 64,
             },
         )
         return writer, client, mountpoint
@@ -222,6 +363,112 @@ class DesktopLiveWriterTests(unittest.TestCase):
     def confirmation(self, writer):
         with patch.object(writer, "_require_root", return_value=None):
             return writer.confirmation_phrase()
+
+    def assert_no_create_state(self, client, directory):
+        self.assertEqual(client.writes, [])
+        self.assertEqual(client.datasets, {})
+        self.assertEqual(client.vms, {})
+        self.assertFalse((Path(directory) / "operation.json").exists())
+        self.assertFalse((Path(directory) / "targets").exists())
+
+    def test_missing_service_account_refuses_direct_create_before_any_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory)
+            confirmation = self.confirmation(writer)
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module.pwd, "getpwnam", side_effect=KeyError("missing-account")), \
+                 self.assertRaisesRegex(DesktopWriterError, "service account is unavailable"):
+                writer.create(confirmation=confirmation)
+            self.assert_no_create_state(client, directory)
+
+    def test_root_vm_service_account_refuses_direct_create_before_any_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory)
+            confirmation = self.confirmation(writer)
+            writer.service_account = "root"
+            root_account = pwd.struct_passwd(("root", "x", 0, 0, "root", "/root", "/bin/sh"))
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module.pwd, "getpwnam", return_value=root_account), \
+                 self.assertRaisesRegex(DesktopWriterError, "must be a non-root"):
+                writer.create(confirmation=confirmation)
+            self.assert_no_create_state(client, directory)
+
+    def test_missing_runuser_refuses_direct_create_before_any_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory)
+            confirmation = self.confirmation(writer)
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module.shutil, "which", return_value=None), \
+                 self.assertRaisesRegex(DesktopWriterError, "runuser is required"):
+                writer.create(confirmation=confirmation)
+            self.assert_no_create_state(client, directory)
+
+    def test_service_account_unavailable_before_create_refuses_after_prior_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory)
+            confirmation = self.confirmation(writer)
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module.pwd, "getpwnam", side_effect=KeyError("removed-account")), \
+                 self.assertRaisesRegex(DesktopWriterError, "service account is unavailable"):
+                writer.create(confirmation=confirmation)
+            self.assert_no_create_state(client, directory)
+
+    def test_account_disappearing_during_readonly_preflight_stops_before_state_or_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory)
+            confirmation = self.confirmation(writer)
+            account = pwd.getpwnam(writer.service_account)
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module.pwd, "getpwnam", side_effect=[account, KeyError("removed-account")]), \
+                 self.assertRaisesRegex(DesktopWriterError, "service account is unavailable"):
+                writer.create(confirmation=confirmation)
+            self.assertGreater(len(client.calls), 0)
+            self.assert_no_create_state(client, directory)
+
+    def test_reported_qemu_uid_match_is_bound_to_plan_and_create_stays_stopped(self):
+        uid = os.geteuid() or 2001
+        gid = os.getegid() if os.geteuid() else 2001
+        account = pwd.struct_passwd(("vm-runner", "x", uid, gid, "VM process", "/", "/usr/sbin/nologin"))
+        completed = subprocess.CompletedProcess(args=[], returncode=0)
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, mountpoint = self.writer(directory, reported_service_account_uid=uid)
+            writer.service_account = "vm-runner"
+            with patch.object(writer_module.pwd, "getpwnam", return_value=account), \
+                 patch.object(writer_module, "_active_qemu_process_owner", return_value=(uid, "vm-runner")), \
+                 patch.object(writer_module.shutil, "which", return_value="/usr/sbin/runuser"), \
+                 patch.object(writer_module.subprocess, "run", return_value=completed), \
+                 patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint):
+                confirmation = writer.confirmation_phrase()
+                checked = writer._check_inputs()
+                plan = writer._confirmation_plan(*checked[1:])
+                result = writer.create(confirmation=confirmation)
+            self.assertEqual(plan["service_account_identity"]["operator_reported_uid"], uid)
+            self.assertEqual(plan["service_account_identity"]["live_verified"], {"name": "vm-runner", "uid": uid})
+            self.assertEqual(result["status"], "created_not_started_live_unverified")
+            self.assertFalse(result["vm_started"])
+            self.assertTrue(client.writes)
+
+    def test_reported_qemu_uid_mismatch_refuses_before_any_persistent_write(self):
+        uid = os.geteuid() or 2001
+        gid = os.getegid() if os.geteuid() else 2001
+        account = pwd.struct_passwd(("vm-runner", "x", uid, gid, "VM process", "/", "/usr/sbin/nologin"))
+        changed = pwd.struct_passwd(("vm-runner", "x", uid + 1, gid, "VM process", "/", "/usr/sbin/nologin"))
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory, reported_service_account_uid=uid)
+            writer.service_account = "vm-runner"
+            with patch.object(writer_module.pwd, "getpwnam", return_value=account), \
+                 patch.object(writer_module, "_active_qemu_process_owner", return_value=(uid, "vm-runner")), \
+                 patch.object(writer_module.shutil, "which", return_value="/usr/sbin/runuser"), \
+                 patch.object(writer_module.subprocess, "run", return_value=subprocess.CompletedProcess(args=[], returncode=0)), \
+                 patch.object(writer, "_require_root", return_value=None):
+                confirmation = writer.confirmation_phrase()
+                with patch.object(writer_module.pwd, "getpwnam", return_value=changed), \
+                     patch.object(writer_module, "_active_qemu_process_owner", return_value=(uid + 1, "vm-runner")), \
+                     self.assertRaisesRegex(DesktopWriterError, "differs from the operator-reported UID"):
+                    writer.create(confirmation=confirmation)
+            self.assertEqual(client.calls, [])
+            self.assert_no_create_state(client, directory)
 
     def run_writer(self, directory, *, failure=None, display_count=0, healthy=True):
         writer, client, mountpoint = self.writer(
@@ -253,19 +500,15 @@ class DesktopLiveWriterTests(unittest.TestCase):
                 and params[0].get("attributes", {}).get("dtype") == "DISPLAY"
             ]
             self.assertEqual(len(display_creates), 1)
-            self.assertEqual(sum(
-                _TEST_DISPLAY_PASSWORD in json.dumps(params)
-                for _, params in writes
-            ), 1)
             self.assertEqual(display_creates[0]["attributes"], {
                 "dtype": "DISPLAY", "type": "SPICE", "bind": "127.0.0.1",
                 "web": True, "wait": False, "resolution": "1024x768",
-                "port": None, "web_port": None, "password": _TEST_DISPLAY_PASSWORD,
+                "port": None, "web_port": None, "password": None,
             })
             display_readback = client.devices[result["display_device_id"]]["attributes"]
             self.assertEqual(display_readback["port"], 5900)
             self.assertEqual(display_readback["web_port"], 5901)
-            self.assertNotIn(_TEST_DISPLAY_PASSWORD, json.dumps(result))
+
             self.assertEqual(sum(
                 1 for device in client.devices.values()
                 if device["attributes"].get("dtype") == "DISPLAY"
@@ -291,13 +534,32 @@ class DesktopLiveWriterTests(unittest.TestCase):
             self.assertTrue(all(not row["live_vm_process_readable_verified"] for row in manifest["files"]))
             text = manifest_path.read_text()
             self.assertNotIn("synthetic private seed", text)
-            self.assertNotIn(_TEST_DISPLAY_PASSWORD, text)
             self.assertNotIn("password", manifest["resources"][4]["attributes"])
             self.assertTrue(all(
                 item["attributes"].get("dtype") != "DISPLAY"
                 or item.get("creation_method") == "vm.device.create"
                 for item in manifest["resources"] if item["kind"] == "device"
             ))
+
+    def test_existing_shared_dataset_is_reused_without_recreation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, mountpoint = self.writer(directory)
+            client.datasets["tanktest/linux-vms"] = {
+                "id": "tanktest/linux-vms", "type": "FILESYSTEM",
+                "mountpoint": str(mountpoint), "available": 100 * _GIB,
+            }
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint):
+                result = writer.create(confirmation=self.confirmation(writer))
+            dataset_writes = [
+                params[0]["name"] for method, params in client.writes
+                if method == "pool.dataset.create"
+            ]
+            self.assertNotIn("tanktest/linux-vms", dataset_writes)
+            self.assertEqual(len(dataset_writes), 2)
+            self.assertEqual(result["resource_count"], 7)
+            manifest = json.loads((Path(directory) / "operation.json").read_text())
+            self.assertTrue(manifest["inventory_before"]["shared_parent_exists"])
 
     def test_insufficient_privilege_refuses_before_writes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -307,35 +569,33 @@ class DesktopLiveWriterTests(unittest.TestCase):
             self.assertEqual(client.writes, [])
             self.assertFalse((Path(directory) / "operation.json").exists())
 
-    def test_display_password_refusal_precedes_any_resource_creation(self):
-        for password in ("", None, "contains\ncontrol"):
-            with self.subTest(password_type=type(password).__name__), tempfile.TemporaryDirectory() as directory:
-                writer, client, _ = self.writer(directory)
-                with patch.object(writer, "_require_root", return_value=None), \
-                     patch.object(writer_module.getpass, "getpass", return_value=password), \
-                     self.assertRaises(DesktopWriterError):
-                    writer.create(confirmation=self.confirmation(writer))
-                self.assertEqual(client.writes, [])
-                self.assertFalse((Path(directory) / "operation.json").exists())
+    def test_wrong_confirmation_refuses_before_any_write_or_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory)
+            with patch.object(writer, "_require_root", return_value=None), self.assertRaises(DesktopWriterError):
+                writer.create(confirmation="CREATE DesktopTest wrongphrase")
+            self.assertFalse(client.writes)
+            self.assertFalse((Path(directory) / "operation.json").exists())
 
-    def test_display_password_never_enters_result_manifest_or_failure_text(self):
-        for mode in ("before", "after"):
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
-                writer, client, mountpoint = self.writer(directory, failure=(4, mode))
-                with patch.object(writer, "_require_root", return_value=None), \
-                     patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint), \
-                     self.assertRaises(DesktopWriterError) as caught:
-                    writer.create(confirmation=self.confirmation(writer))
-                self.assertEqual(len(client.writes), 5)
-                self.assertEqual(client.writes[4][0], "vm.device.create")
-                self.assertEqual(client.writes[4][1][0]["attributes"]["password"], _TEST_DISPLAY_PASSWORD)
-                manifest_path = Path(directory) / "operation.json"
-                text = manifest_path.read_text()
-                self.assertNotIn(_TEST_DISPLAY_PASSWORD, text)
-                self.assertNotIn(_TEST_DISPLAY_PASSWORD, str(caught.exception))
-                self.assertNotIn(_TEST_DISPLAY_PASSWORD, "".join(traceback.format_exception(caught.exception)))
-                self.assertEqual(json.loads(text)["pending"]["state"], "ambiguous")
-                self.assertEqual(len(client.devices), int(mode == "after"))
+    def test_wrong_verified_hostname_refuses_before_any_write_or_manifest(self):
+        from dataclasses import replace
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory)
+            writer.request = replace(writer.request, expected_hostname="different-host")
+            with patch.object(writer, "_require_root", return_value=None), self.assertRaisesRegex(DesktopWriterError, "hostname"):
+                writer.create(confirmation=self.confirmation(writer))
+            self.assertFalse(client.writes)
+            self.assertFalse((Path(directory) / "operation.json").exists())
+
+    def test_failed_artifact_verification_stops_before_middleware_contact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, _ = self.writer(directory)
+            writer.artifact_verifier = lambda *args: {"signature_verified": False, "iso_bytes_verified": False}
+            with patch.object(writer, "_require_root", return_value=None), self.assertRaises(DesktopWriterError):
+                writer.create(confirmation="unused")
+            self.assertEqual(client.calls, [])
+            self.assertFalse(client.writes)
+            self.assertFalse((Path(directory) / "operation.json").exists())
 
     def test_preflight_refusal_precedes_any_write_or_manifest(self):
         with tempfile.TemporaryDirectory() as directory:

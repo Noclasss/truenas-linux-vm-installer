@@ -1,8 +1,9 @@
 """Local Desktop artifact verification; no downloads or TrueNAS operations.
 
 This helper verifies caller-supplied files. It never enables a live profile.
-Use a trusted workstation with gpgv already installed, not package installation
-on TrueNAS. No GnuPG user configuration or default keyring is used.
+Use an existing GnuPG verifier (gpgv preferred, gpg accepted with an isolated
+keyring); do not install packages on TrueNAS. No user configuration or default
+keyring is used.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -104,7 +106,7 @@ def _manifest_digest(manifest: bytes, filename: str, pinned_digest: str) -> str:
 
 def _verify_signature(manifest: bytes, signature: bytes, keyring: bytes,
                       expected_fingerprint: str) -> None:
-    # Snapshot inputs so gpgv and the parser examine the same manifest bytes.
+    # Snapshot inputs so the verifier and parser examine the same manifest bytes.
     # A private homedir and explicit keyring avoid ambient trust/configuration.
     with tempfile.TemporaryDirectory(prefix="desktop-verify-") as directory:
         root = Path(directory)
@@ -113,19 +115,31 @@ def _verify_signature(manifest: bytes, signature: bytes, keyring: bytes,
             with (root / name).open("xb") as stream:
                 os.fchmod(stream.fileno(), 0o600)
                 stream.write(data)
+        verifier = shutil.which("gpgv", path=os.defpath)
+        use_gpg = verifier is None
+        if use_gpg:
+            verifier = shutil.which("gpg", path=os.defpath)
+        if verifier is None:
+            raise DesktopIntegrityError("GnuPG signature verifier is unavailable")
+        argv = [verifier]
+        if use_gpg:
+            argv.extend(["--batch", "--no-tty", "--no-options", "--no-default-keyring",
+                         "--no-auto-key-retrieve"])
+        argv.extend(["--homedir", str(root), "--keyring", str(root / "trustedkeys.gpg"),
+                     "--status-fd", "1"])
+        if use_gpg:
+            argv.append("--verify")
+        argv.extend([str(root / "SHA256SUMS.gpg"), str(root / "SHA256SUMS")])
         try:
             result = subprocess.run(
-                ["gpgv", "--homedir", str(root), "--keyring",
-                 str(root / "trustedkeys.gpg"), "--status-fd", "1",
-                 str(root / "SHA256SUMS.gpg"), str(root / "SHA256SUMS")],
-                stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                 check=False, timeout=30,
                 env={"PATH": os.defpath, "LC_ALL": "C"},
             )
         except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
-            raise DesktopIntegrityError("gpgv unavailable, failed, or timed out") from exc
+            raise DesktopIntegrityError("GnuPG signature verification failed or timed out") from exc
         if result.returncode != 0:
-            raise DesktopIntegrityError("gpgv rejected the checksum signature")
+            raise DesktopIntegrityError("GnuPG rejected the checksum signature")
         _check_status(result.stdout, expected_fingerprint)
 
 

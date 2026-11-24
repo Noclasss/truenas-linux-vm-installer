@@ -7,17 +7,17 @@ separately authorized target and exact-build read-only preflight.
 """
 from __future__ import annotations
 
-import getpass
 import hashlib
 import json
 import os
 import pwd
 import re
+import select
 import shutil
 import stat
 import subprocess
+import time
 import uuid
-import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, NoReturn
@@ -25,6 +25,8 @@ from typing import Any, Callable, NoReturn
 if __package__:
     from . import ubuntu_desktop as desktop
     from .desktop_integrity import verify_desktop_artifacts
+    from .desktop_catalogue import verify_desktop_source_id
+    from .desktop_manifest import ManifestInspectionError, find_prior_target_manifest, make_target_key
     from .installer_core.compatibility import CompatibilityError
     from .installer_core.safe_filesystem import (
         FilesystemSafetyError, atomic_replace_private_file,
@@ -40,6 +42,8 @@ if __package__:
 else:
     import ubuntu_desktop as desktop
     from desktop_integrity import verify_desktop_artifacts
+    from desktop_catalogue import verify_desktop_source_id
+    from desktop_manifest import ManifestInspectionError, find_prior_target_manifest, make_target_key
     from installer_core.compatibility import CompatibilityError
     from installer_core.safe_filesystem import (
         FilesystemSafetyError, atomic_replace_private_file,
@@ -78,6 +82,7 @@ class DesktopCreateRequest:
     cache_on_selected_pool: bool
     # The initial create-only slice intentionally does not add a NIC.
     bridge_name: str | None = None
+    expected_hostname: str = ""
 
 
 @dataclass(frozen=True)
@@ -191,18 +196,6 @@ def _validate_write_result(methods: dict[str, Any], method: str, result: Any) ->
         raise DesktopWriterError(f"{method} returned a value outside its reviewed contract")
 
 
-def _private_display_password() -> str:
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", getpass.GetPassWarning)
-            password = getpass.getpass("SPICE display password: ")
-    except (EOFError, OSError, getpass.GetPassWarning):
-        raise DesktopWriterError("private display password input is unavailable") from None
-    if not isinstance(password, str) or not password or any(ord(char) < 32 or ord(char) == 127 for char in password):
-        raise DesktopWriterError("a non-empty printable display password is required")
-    return password
-
-
 def _without_device_password(attributes: Any) -> dict[str, Any] | None:
     if not isinstance(attributes, dict):
         return None
@@ -229,6 +222,123 @@ def _device_attributes_match(actual: Any, expected: dict[str, Any]) -> bool:
     )
 
 
+def _parse_qemu_process_owner(output: bytes) -> tuple[int, str]:
+    try:
+        text = output.decode("utf-8", "strict")
+    except UnicodeDecodeError as exc:
+        raise DesktopWriterError("active process inventory encoding is invalid") from exc
+    owners: set[tuple[int, str]] = set()
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split(None, 1)
+        if len(fields) != 2:
+            raise DesktopWriterError("active process inventory is malformed")
+        uid_text, command = fields
+        if not (command.startswith("qemu-system-") or command == "qemu-kvm"):
+            continue
+        if not uid_text.isdecimal():
+            raise DesktopWriterError("active QEMU process identity is malformed")
+        try:
+            account = pwd.getpwuid(int(uid_text))
+        except (KeyError, OSError, ValueError) as exc:
+            raise DesktopWriterError("active QEMU process UID is not mapped to a host account") from exc
+        owners.add((account.pw_uid, account.pw_name))
+    if len(owners) != 1:
+        raise DesktopWriterError("exactly one active QEMU service-account identity is required")
+    return next(iter(owners))
+
+
+def _active_qemu_process_owner() -> tuple[int, str]:
+    """Identify the one active QEMU owner without buffering unbounded output."""
+    ps = shutil.which("ps")
+    if not ps or not os.path.isabs(ps):
+        raise DesktopWriterError("absolute ps is required to identify the active VM-process account")
+    process: subprocess.Popen[bytes] | None = None
+    data = bytearray()
+    deadline = time.monotonic() + 10
+    try:
+        process = subprocess.Popen(
+            [ps, "-eo", "euid=,comm="], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env={"PATH": os.defpath, "LC_ALL": "C"}, bufsize=0,
+        )
+        if process.stdout is None:
+            raise DesktopWriterError("active QEMU process inventory could not be read")
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired([ps, "-eo", "euid=,comm="], 10)
+            readable, _, _ = select.select([process.stdout], [], [], remaining)
+            if not readable:
+                raise subprocess.TimeoutExpired([ps, "-eo", "euid=,comm="], 10)
+            chunk = os.read(process.stdout.fileno(), min(4096, 65537 - len(data)))
+            if not chunk:
+                break
+            data.extend(chunk)
+            if len(data) > 64 * 1024:
+                raise DesktopWriterError("active QEMU process inventory exceeded its output bound")
+        process.wait(timeout=max(0.01, deadline - time.monotonic()))
+        if process.returncode != 0:
+            raise DesktopWriterError("active QEMU process ownership query failed")
+        return _parse_qemu_process_owner(bytes(data))
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DesktopWriterError("active QEMU process ownership could not be queried") from exc
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.SubprocessError:
+                    pass
+            if process.stdout is not None:
+                process.stdout.close()
+
+
+def _verify_vm_process_account(
+    service_account: str, *, runner: Callable[..., Any] | None = None,
+) -> pwd.struct_passwd:
+    """Verify local account and runuser execution without touching staged files."""
+    if not isinstance(service_account, str) or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", service_account):
+        raise DesktopWriterError("selected VM-process service account name is invalid")
+    try:
+        account = pwd.getpwnam(service_account)
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        raise DesktopWriterError("selected VM-process service account is unavailable on this host") from exc
+    if account.pw_uid <= 0:
+        raise DesktopWriterError("VM-process service account must be a non-root account")
+    runuser = shutil.which("runuser")
+    if not runuser or not os.path.isabs(runuser):
+        raise DesktopWriterError("runuser is required at an absolute host PATH location for VM-process checks")
+    execute = runner or subprocess.run
+    active_uid, active_name = _active_qemu_process_owner()
+    if (active_uid, active_name) != (account.pw_uid, account.pw_name):
+        raise DesktopWriterError("selected service account does not match the active QEMU process owner")
+    probe = (
+        "import os; "
+        f"assert os.geteuid() == {account.pw_uid}; "
+        "fd = os.open('/dev/null', os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)); "
+        "os.close(fd)"
+    )
+    execute = runner or subprocess.run
+    try:
+        result = execute(
+            [runuser, "-u", service_account, "--", "python3", "-c", probe],
+            check=False, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, env={"PATH": os.defpath, "LC_ALL": "C"}, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DesktopWriterError(
+            "runuser cannot execute local checks as the selected VM-process service account"
+        ) from exc
+    if result.returncode != 0:
+        raise DesktopWriterError(
+            "runuser cannot execute local checks as the selected VM-process service account"
+        )
+    return account
+
+
 class _CaptureMethodsClient:
     """Capture the exact method table already read by the compatibility check."""
     def __init__(self, client: Any):
@@ -253,8 +363,12 @@ class DesktopCreateOnlyWriter:
         *,
         manifest_path: Path,
         service_account: str,
+        reported_service_account_uid: int | None = None,
+        guest_identity: dict[str, str] | None = None,
         access_probe: Callable[[Path, str], bool] = _safe_read_probe,
         artifact_verifier: Callable[..., dict[str, Any]] = verify_desktop_artifacts,
+        catalogue_verifier: Callable[..., dict[str, Any]] = verify_desktop_source_id,
+        target_registry_root: Path = Path("/var/lib/truenas-linux-desktop/targets"),
     ):
         self.client = client
         self.fixture = fixture
@@ -262,18 +376,36 @@ class DesktopCreateOnlyWriter:
         self.artifacts = artifacts
         self.manifest_path = Path(manifest_path)
         self.service_account = service_account
+        self.reported_service_account_uid = reported_service_account_uid
+        self.guest_identity = dict(guest_identity) if guest_identity is not None else None
+        self._verified_service_account: dict[str, Any] | None = None
         self.access_probe = access_probe
         self.artifact_verifier = artifact_verifier
+        self.catalogue_verifier = catalogue_verifier
+        self.target_registry_root = Path(target_registry_root)
 
     def _require_root(self) -> None:
         if _effective_uid() != 0:
             raise DesktopWriterError("create-only adapter requires an authenticated root host process")
 
-    def _check_inputs(self) -> tuple[dict[str, Any], dict[str, int], str, str]:
+    def _require_vm_process_account(self) -> pwd.struct_passwd:
+        return _verify_vm_process_account(self.service_account)
+
+    def _check_inputs(self) -> tuple[dict[str, Any], dict[str, int], str, int, str, dict[str, Any], dict[str, Any]]:
         req = self.request
         self._require_root()
+        account = self._require_vm_process_account()
+        if (self.reported_service_account_uid is not None
+                and account.pw_uid != self.reported_service_account_uid):
+            raise DesktopWriterError("live VM-process account UID differs from the operator-reported UID")
+        self._verified_service_account = {"name": account.pw_name, "uid": account.pw_uid}
         if not _VM_NAME.fullmatch(req.vm_name) or not _POOL_NAME.fullmatch(req.pool_name):
             raise DesktopWriterError("VM or pool name is invalid")
+        if (
+            not isinstance(req.expected_hostname, str)
+            or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", req.expected_hostname)
+        ):
+            raise DesktopWriterError("an exact expected TrueNAS hostname is required")
         if req.pool_name.casefold() in {"boot-pool", "freenas-boot"}:
             raise DesktopWriterError("boot pools cannot be selected")
         if req.source_id not in _SOURCE_IDS:
@@ -297,12 +429,35 @@ class DesktopCreateOnlyWriter:
         if not callable(getattr(self.client, "call", None)):
             raise DesktopWriterError("middleware client is invalid")
         try:
-            self.artifact_verifier(
+            artifact_report = self.artifact_verifier(
                 self.artifacts.iso, self.artifacts.checksum_manifest,
                 self.artifacts.signature, self.artifacts.keyring,
             )
+            if (
+                not isinstance(artifact_report, dict)
+                or artifact_report.get("signature_verified") is not True
+                or artifact_report.get("iso_bytes_verified") is not True
+                or artifact_report.get("filename") != desktop.IMAGE_FILENAME
+                or artifact_report.get("sha256") != desktop.ARTIFACT_SHA256
+                or artifact_report.get("size_bytes") != desktop.ARTIFACT_SIZE_BYTES
+                or artifact_report.get("signing_key_fingerprint") != desktop.SIGNING_KEY_FINGERPRINT
+                or not isinstance(artifact_report.get("manifest_sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", artifact_report["manifest_sha256"])
+            ):
+                raise DesktopWriterError("source ISO verification did not confirm the pinned signer and exact artifact identity")
+            catalogue_report = self.catalogue_verifier(self.artifacts.iso, req.source_id)
+            if (
+                not isinstance(catalogue_report, dict)
+                or catalogue_report.get("verified_from_iso") is not True
+                or catalogue_report.get("source_id") != req.source_id
+                or not isinstance(catalogue_report.get("catalogue_sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", catalogue_report["catalogue_sha256"])
+            ):
+                raise DesktopWriterError("source ID was not verified from the exact ISO catalogue")
         except Exception as exc:
-            raise DesktopWriterError("source ISO signature or pinned-byte verification failed") from exc
+            if isinstance(exc, DesktopWriterError):
+                raise
+            raise DesktopWriterError("source ISO signature, pinned-byte, or catalogue verification failed") from exc
         iso_size, iso_sha = _sha256_file(self.artifacts.iso, desktop.ARTIFACT_SIZE_BYTES)
         if iso_size != desktop.ARTIFACT_SIZE_BYTES or iso_sha != desktop.ARTIFACT_SHA256:
             raise DesktopWriterError("source ISO bytes differ from the fixed verified pin")
@@ -312,33 +467,108 @@ class DesktopCreateOnlyWriter:
         seed_info = self.artifacts.seed.lstat()
         if stat.S_IMODE(seed_info.st_mode) != 0o600:
             raise DesktopWriterError("source seed media must be private mode 0600")
-        return asdict(preflight_request), floor, iso_sha, seed_sha
+        return asdict(preflight_request), floor, iso_sha, seed_size, seed_sha, artifact_report, catalogue_report
 
-    def confirmation_phrase(self) -> str:
-        """Return the plan-bound phrase to show and obtain from the operator."""
-        _, floor, iso_sha, seed_sha = self._check_inputs()
-        plan = {
-            "build": self.fixture["truenas_version"], "vm": self.request.vm_name,
-            "pool": self.request.pool_name,
+    def _confirmation_plan(
+        self, floor: dict[str, int], iso_sha: str, seed_size: int, seed_sha: str,
+        artifact_report: dict[str, Any], catalogue_report: dict[str, Any],
+    ) -> dict[str, Any]:
+        shared_parent = f"{self.request.pool_name}/linux-vms"
+        vm_dataset = f"{shared_parent}/{self.request.vm_name}"
+        zvol = f"{vm_dataset}/disk0"
+        target_key = make_target_key(
+            self.request.expected_hostname, self.fixture["truenas_version"],
+            self.request.pool_name, self.request.vm_name,
+        )
+        target_guard_path = self.target_registry_root / f"{target_key}.json"
+        return {
+            "build": self.fixture["truenas_version"], "host": self.request.expected_hostname,
+            "vm": self.request.vm_name, "pool": self.request.pool_name,
             "vm_dataset": f"{self.request.pool_name}/linux-vms/{self.request.vm_name}",
             "zvol": f"{self.request.pool_name}/linux-vms/{self.request.vm_name}/disk0",
             "vcpus": self.request.vcpus, "memory_mib": self.request.memory_mib,
             "disk_gib": self.request.disk_gib, "autostart": False,
-            "source_id": self.request.source_id, "network": "omitted",
-            "iso_sha256": iso_sha, "seed_sha256": seed_sha,
+            "vm_start": False, "nic_create": False, "network": "none",
+            "service_account": self.service_account,
+            "service_account_identity": {
+                "operator_reported_uid": self.reported_service_account_uid,
+                "live_verified": self._verified_service_account,
+            },
+            "guest_identity": self.guest_identity,
+            "source_id": self.request.source_id,
+            "catalogue_sha256": catalogue_report.get("catalogue_sha256"),
+            "artifact": {
+                "iso_path": os.fspath(self.artifacts.iso), "iso_sha256": iso_sha,
+                "iso_size_bytes": artifact_report.get("size_bytes"),
+                "checksum_manifest_path": os.fspath(self.artifacts.checksum_manifest),
+                "manifest_sha256": artifact_report.get("manifest_sha256"),
+                "signature_path": os.fspath(self.artifacts.signature),
+                "keyring_path": os.fspath(self.artifacts.keyring),
+                "signing_key_fingerprint": artifact_report.get("signing_key_fingerprint"),
+            },
+            "seed": {"path": os.fspath(self.artifacts.seed), "sha256": seed_sha, "size_bytes": seed_size},
+            "manifest_path": os.fspath(self.manifest_path),
+            "target_guard_path": os.fspath(target_guard_path),
+            "persistent_resources_to_create": {
+                "datasets": [
+                    {"id": shared_parent, "type": "FILESYSTEM", "create_only_if_absent": True},
+                    {"id": vm_dataset, "type": "FILESYSTEM", "create": True},
+                ],
+                "zvol": {"id": zvol, "type": "VOLUME", "size_bytes": self.request.disk_gib * 1024**3},
+                "staged_files": [
+                    {"dataset_relative_path": "ubuntu-installer.iso", "sha256": iso_sha,
+                     "size_bytes": artifact_report.get("size_bytes"), "mode": "0600"},
+                    {"dataset_relative_path": "cidata.img", "sha256": seed_sha,
+                     "size_bytes": seed_size, "mode": "0600", "sensitive": True},
+                ],
+                "vm": {"name": self.request.vm_name, "autostart": False,
+                       "state_after_create": "STOPPED", "network": "none"},
+                "devices": [
+                    {"dtype": "DISPLAY", "type": "SPICE", "bind": "127.0.0.1",
+                     "web": True, "wait": False, "resolution": "1024x768",
+                     "port": None, "web_port": None, "password": None},
+                    {"dtype": "DISK", "path": f"/dev/zvol/{zvol}",
+                     "type": "VIRTIO", "create_zvol": False},
+                    {"dtype": "CDROM", "dataset_relative_path": "ubuntu-installer.iso"},
+                    {"dtype": "RAW", "dataset_relative_path": "cidata.img",
+                     "exists": True, "boot": False, "type": "AHCI"},
+                ],
+                "private_state_files": [
+                    os.fspath(self.manifest_path), os.fspath(target_guard_path),
+                ],
+                "private_state_directories_if_absent": [
+                    os.fspath(self.manifest_path.parent), os.fspath(self.target_registry_root),
+                ],
+            },
             "capacity": floor,
         }
+
+    def confirmation_phrase_from_values(
+        self, floor: dict[str, int], iso_sha: str, seed_size: int, seed_sha: str,
+        artifact_report: dict[str, Any], catalogue_report: dict[str, Any],
+    ) -> str:
+        """Bind confirmation to the exact validated target and input identities."""
+        plan = self._confirmation_plan(floor, iso_sha, seed_size, seed_sha, artifact_report, catalogue_report)
         digest = hashlib.sha256(json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         return f"CREATE {self.request.vm_name} {digest[:12]}"
 
+    def confirmation_phrase(self) -> str:
+        """Return the plan-bound phrase to show and obtain from the operator."""
+        _, floor, iso_sha, seed_size, seed_sha, artifact_report, catalogue_report = self._check_inputs()
+        return self.confirmation_phrase_from_values(
+            floor, iso_sha, seed_size, seed_sha, artifact_report, catalogue_report,
+        )
+
     def create(self, *, confirmation: str) -> dict[str, Any]:
-        preflight_dict, floor, iso_sha, seed_sha = self._check_inputs()
+        preflight_dict, floor, iso_sha, seed_size, seed_sha, artifact_report, catalogue_report = self._check_inputs()
         preflight_request = ReadOnlyPreflightRequest(**preflight_dict)
         capture = _CaptureMethodsClient(self.client)
         try:
-            run_read_only_preflight(capture, self.fixture, preflight_request)
+            preflight_report = run_read_only_preflight(capture, self.fixture, preflight_request)
         except (PreflightError, CompatibilityError, SchemaError) as exc:
             raise DesktopWriterError("read-only exact-build preflight refused before mutation") from exc
+        if preflight_report.system_hostname != self.request.expected_hostname:
+            raise DesktopWriterError("verified host hostname differs from the target record; refusing before mutation")
         methods = capture.methods
         if not isinstance(methods, dict):
             raise DesktopWriterError("exact runtime method schema was not captured")
@@ -349,20 +579,13 @@ class DesktopCreateOnlyWriter:
         vm_dataset = f"{self.request.pool_name}/linux-vms/{self.request.vm_name}"
         shared_parent = f"{self.request.pool_name}/linux-vms"
         zvol = f"{vm_dataset}/disk0"
-        plan = {
-            "build": self.fixture["truenas_version"], "vm": self.request.vm_name,
-            "pool": self.request.pool_name, "vm_dataset": vm_dataset, "zvol": zvol,
-            "vcpus": self.request.vcpus, "memory_mib": self.request.memory_mib,
-            "disk_gib": self.request.disk_gib, "autostart": False,
-            "source_id": self.request.source_id, "network": "omitted",
-            "iso_sha256": iso_sha, "seed_sha256": seed_sha,
-            "capacity": floor,
-        }
+        plan = self._confirmation_plan(floor, iso_sha, seed_size, seed_sha, artifact_report, catalogue_report)
         plan_digest = hashlib.sha256(json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        expected_confirmation = self.confirmation_phrase()
+        expected_confirmation = self.confirmation_phrase_from_values(
+            floor, iso_sha, seed_size, seed_sha, artifact_report, catalogue_report,
+        )
         if confirmation != expected_confirmation:
-            raise DesktopWriterError(f"fresh confirmation must equal {expected_confirmation}")
-        display_password = _private_display_password()
+            raise DesktopWriterError("fresh confirmation does not match the reverified plan")
 
         # Capture the pre-existing shared parent from an exact read-only row.
         datasets = _require_rows(checked.call_read("pool.dataset.query", [[], {"select": ["id", "type", "mountpoint"]}]), "dataset query")
@@ -370,7 +593,38 @@ class DesktopCreateOnlyWriter:
         if len(shared_rows) > 1 or (shared_rows and shared_rows[0].get("type") != "FILESYSTEM"):
             raise DesktopWriterError("shared parent state is ambiguous or not a filesystem")
         shared_existed = bool(shared_rows)
+        target_key = make_target_key(
+            self.request.expected_hostname, self.fixture["truenas_version"],
+            self.request.pool_name, self.request.vm_name,
+        )
+        try:
+            prior = find_prior_target_manifest(
+                self.manifest_path.parent, target_key,
+                self.request.pool_name, self.request.vm_name,
+            )
+        except ManifestInspectionError as exc:
+            raise DesktopWriterError("could not establish that the target has no prior operation; refusing before mutation") from exc
+        if prior is not None:
+            raise DesktopWriterError(f"target already has an operation record at {prior}; inspect it read-only before any new action")
+        # Recheck after all read-only host queries and before the guard/manifest or first middleware write.
+        service = self._require_vm_process_account()
+        if self._verified_service_account != {"name": service.pw_name, "uid": service.pw_uid}:
+            raise DesktopWriterError("VM-process account identity changed after confirmation; no create was attempted")
         run_id = str(uuid.uuid4())
+        guard_path = self.target_registry_root / f"{target_key}.json"
+        guard: dict[str, Any] = {
+            "format": "truenas-linux-desktop-target-guard-v1",
+            "target_key": target_key,
+            "manifest_path": os.fspath(self.manifest_path),
+            "status": "preparing",
+            "run_id": run_id,
+        }
+        try:
+            ensure_trusted_directory_chain(self.manifest_path.parent, "Desktop operation directory", create=True)
+            ensure_trusted_directory_chain(self.target_registry_root, "Desktop target registry", create=True)
+            write_private_new_file(guard_path, json.dumps(guard, sort_keys=True, indent=2) + "\n")
+        except (OSError, FilesystemSafetyError) as exc:
+            raise DesktopWriterError("target is already claimed or the private target guard could not be created") from exc
         intended_resources = []
         if not shared_existed:
             intended_resources.append({"kind": "dataset", "identifier": shared_parent, "creation_method": "pool.dataset.create"})
@@ -387,6 +641,7 @@ class DesktopCreateOnlyWriter:
         ))
         manifest = {
             "format": _FORMAT, "run_id": run_id, "status": "preparing",
+            "target_key": target_key,
             "plan": plan, "plan_digest": plan_digest,
             "inventory_before": {"shared_parent_exists": shared_existed},
             "intended_resources": intended_resources,
@@ -401,8 +656,16 @@ class DesktopCreateOnlyWriter:
         def save() -> None:
             try:
                 atomic_replace_private_file(self.manifest_path, json.dumps(manifest, sort_keys=True, indent=2) + "\n")
+                guard["status"] = manifest.get("status")
+                pending_record = manifest.get("pending")
+                guard["pending"] = {
+                    key: pending_record.get(key)
+                    for key in ("method", "identifier", "api_id", "vm_id", "state")
+                    if isinstance(pending_record, dict) and key in pending_record
+                } if isinstance(pending_record, dict) else None
+                atomic_replace_private_file(guard_path, json.dumps(guard, sort_keys=True, indent=2) + "\n")
             except (OSError, FilesystemSafetyError) as exc:
-                raise DesktopWriterError("private operation record update failed; stop for manual reconciliation") from exc
+                raise DesktopWriterError("private operation record/target guard update failed; stop for manual reconciliation") from exc
 
         def pending(method: str, identifier: str, payload: Any) -> None:
             manifest["pending"] = {
@@ -471,13 +734,6 @@ class DesktopCreateOnlyWriter:
             ensure_trusted_directory_chain(mountpoint, "Desktop staging dataset")
         except (DesktopWriterError, FilesystemSafetyError) as exc:
             stop_ambiguous("staging mountpoint could not be validated", exc)
-
-        try:
-            service = pwd.getpwnam(self.service_account)
-        except (KeyError, TypeError) as exc:
-            stop_ambiguous("selected VM-process account is unavailable", exc)
-        if service.pw_uid <= 0:
-            stop_ambiguous("VM-process account must be a non-root service account")
 
         staged_iso = mountpoint / "ubuntu-installer.iso"
         staged_seed = mountpoint / "cidata.img"
@@ -649,7 +905,7 @@ class DesktopCreateOnlyWriter:
         devices_to_create = (
             ("display", {"dtype": "DISPLAY", "type": "SPICE", "bind": "127.0.0.1",
                           "web": True, "wait": False, "resolution": "1024x768",
-                          "port": None, "web_port": None, "password": display_password}),
+                          "port": None, "web_port": None, "password": None}),
             ("disk", {"dtype": "DISK", "path": f"/dev/zvol/{zvol}", "type": "VIRTIO", "create_zvol": False}),
             ("installer", {"dtype": "CDROM", "path": os.fspath(staged_iso)}),
             ("seed", {"dtype": "RAW", "path": os.fspath(staged_seed), "exists": True, "boot": False, "type": "AHCI"}),
@@ -727,5 +983,6 @@ class DesktopCreateOnlyWriter:
             "resource_count": len(manifest["resources"]),
             "files": [{k: row[k] for k in ("kind", "path", "sha256", "size_bytes", "mode", "access_probe", "selected_service_account_open_verified", "live_vm_process_readable_verified")} for row in manifest["files"]],
             "vm_started": False, "live_profile_enabled": False,
+            "target_key": target_key,
             "manifest_path": os.fspath(self.manifest_path),
         }

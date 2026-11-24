@@ -113,30 +113,35 @@ A separate operator-run console-only test later converted the pinned Ubuntu Serv
 
 The recorded merges and offline checks do not establish installer behavior. The manual live tests establish only the narrowly described synthetic conversion and console boot; installer-flow write acceptance, seed/CDROM setup, guest provisioning/login, guest networking, and automated cleanup remain unverified. The project remains experimental, `LIVE_PROFILE_ALLOWLIST` remains empty, and all four profiles remain experimental.
 
-## Quick start (preview only)
+## Quick start: previews only
 
-From a reviewed local checkout, run the guided Ubuntu Desktop preview:
+The ordinary `install.sh` interactive route is an offline JSON planner; it does not contact TrueNAS. From a reviewed local checkout, run:
 
 ```sh
 ./install.sh --interactive --profile ubuntu-desktop
 ```
 
-After this change is merged, for a host shell without a checkout, the following checksum-pinned bootstrapper is preview-only. It makes an outbound GitHub request, stages the fixed reviewed source commit `912333b58bdaec01a82bb9365212cf5642cc748b` in a private temporary directory under `/tmp`, verifies that exact commit before execution, invokes only the local preview launcher, then removes its own temporary checkout. It does not query TrueNAS, create a manifest, or create/start a VM. It requires `curl`, `sha256sum`, `git`, and `python3`. It writes temporary files under `/tmp`; do not run it when the host is restricted to read-only operations, and do not use it for an actual VM deployment. Stop if the SHA check fails; do not replace the pin with a newly downloaded digest without reviewing the script.
+For the guided host-side read-only preflight, run this from the repository root on TrueNAS or another authenticated TrueNAS shell with `midclt` access:
 
 ```sh
-( umask 077 || exit 1; d=$(mktemp -d "/tmp/linux-vm-preview.XXXXXXXX") || exit 1; trap 'rm -rf -- "$d"' 0; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; curl -fsSL --proto '=https' --proto-redir '=https' 'https://raw.githubusercontent.com/Noclasss/truenas-linux-vm-installer/main/ubuntu-desktop-preview-bootstrap.sh' -o "$d/bootstrap.sh" && printf '%s  %s\n' '68d9069b7e61b807bd7538c90ac8a5f61f1864a170d653c581af19df66b5347c' "$d/bootstrap.sh" | sha256sum -c - && sh "$d/bootstrap.sh" )
+python3 planning/desktop_readonly_preview.py --preview
 ```
 
-The bootstrapper refuses all arguments and only opens the guided offline preview. The local launcher resolves the checked-out repository and runs the offline planner; it does not download code, contact TrueNAS, create a manifest, or install a VM. It prompts for the VM name, pool, bridge, CPU, RAM, and disk size, then prints a JSON plan. All profiles remain experimental and the plan cannot be applied. A real guided installer still requires the live preflight, image-to-zvol import, resource read-back, and disposable boot gates below; this is not an install command yet.
+It shows VM name, explicit pool, vCPU, RAM, virtual-disk size, autostart/start state, and the fixed first-create no-NIC choice. You can accept or change the values; it measures point-in-time RAM and pool headroom, then runs the existing preflight only after `RUN`. Exact `TrueNAS-26.0.0-BETA.2` build and method request/return schemas remain mandatory. It reports pass/fail and unchecked items. It does not create a VM, dataset, zvol, device, manifest, seed, or installation, and it does not start a VM. A pass is not write authorization or a reservation.
 
-For a config-file preview:
+For a shell without a checkout, the command below downloads the reviewed bootstrap script from immutable commit `bf0b64eec8e5cfc3ebdb73f3977d26a030ad6ee3`, checks its independently pinned SHA-256 before executing it, then the script fetches and verifies that same source commit and opens the interactive preflight. The shell needs `curl`, `sha256sum`, `git`, `python3`, and an interactive terminal. It writes only temporary download/checkout files under `/tmp` and removes its private directory on exit; no TrueNAS VM/storage resources are changed.
+
+```sh
+( set -eu; umask 077; REF='bf0b64eec8e5cfc3ebdb73f3977d26a030ad6ee3'; BOOTSTRAP_SHA256='59c838c1f9fd712d026b9b4ae992e6d2e205db22868e8145bc94f38f52ba3727'; d=$(mktemp -d "/tmp/linux-vm-desktop-preview.XXXXXXXX") || exit 1; trap 'rm -rf -- "$d"' 0; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; curl -fsSL --proto '=https' --proto-redir '=https' "https://raw.githubusercontent.com/Noclasss/truenas-linux-vm-installer/$REF/ubuntu-desktop-preview-bootstrap.sh" -o "$d/bootstrap.sh"; printf '%s  %s\n' "$BOOTSTRAP_SHA256" "$d/bootstrap.sh" | sha256sum -c -; sh "$d/bootstrap.sh" --ref "$REF" --preview )
+```
+
+For the offline planner from a config file:
 
 ```sh
 ./install.sh --config planning/examples/vm.json
 ```
 
-See [planner documentation](planning/README.md) for inventory checks, examples,
-tests and limitations. Preview success does not establish live compatibility.
+See [planner documentation](planning/README.md) for the preflight inputs, exact-build/schema gates, headroom calculations, unchecked items, and limitations. Preview success does not establish write acceptance, artifact readiness, VM-process access, installation, or guest boot.
 
 ### Verified bootstrapper (preview only, unreleased)
 

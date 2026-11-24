@@ -49,7 +49,7 @@ class DesktopAutoinstallTests(unittest.TestCase):
         self.assertNotIn("plaintext", rendered)
 
     def test_password_hashing_uses_openssl_stdin_without_secret_in_arguments(self):
-        password = "LocalOnly-Test!2026"
+        password = "abc"
         result = subprocess.CompletedProcess(["openssl"], 0, stdout=VALID_PASSWORD_HASH + "\n", stderr="")
         runner = Mock(return_value=result)
         rendered = hash_desktop_password(password, runner=runner)
@@ -63,7 +63,7 @@ class DesktopAutoinstallTests(unittest.TestCase):
 
     def test_rejects_empty_or_short_password_without_calling_openssl(self):
         runner = Mock()
-        for password in ("", "short"):
+        for password in ("", "a", "ab", "x" * 129, "a\nb"):
             with self.subTest(password_length=len(password)), self.assertRaises(DesktopAutoinstallError):
                 hash_desktop_password(password, runner=runner)
         runner.assert_not_called()
