@@ -15,7 +15,7 @@ Destination: `/mnt/<pool>/linux-vms/<vm>/` (mountpoint of the dataset `<pool>/li
 
 ## 2. Owner and mode that let the VM process read
 
-- **Owner is the VM-process account**, not root. The account is the libvirt QEMU user named in `/etc/libvirt/qemu.conf` (section 6), and it must equal the account in the target record.
+- **Owner is the VM-process account**, not root. The account is the libvirt QEMU user named in `/etc/libvirt/qemu.conf` when a user line exists (rule 1), or is confirmed by the euid of every running `qemu-system` process when none exists (rule 2). Either way it must equal the account in the target record (section 6).
 - **Group** is the account's primary group. A `group =` line in `qemu.conf` is recorded but not enforced: the VM process reads these files as owner (mode 0600), so the group does not change access.
 - **Mode 0600.** The owner can read; group and other have no bits. Root can still read for re-hash because DAC does not apply to root.
 - **Why not 0644 or root-owned 0600?** The 2026-10-22 probe showed a mode-0600 root-owned file is unreadable by the VM account. A group/world-readable seed would expose the password hash. The writer never widens the mode; the owner change is what grants access.
@@ -40,24 +40,35 @@ Destination: `/mnt/<pool>/linux-vms/<vm>/` (mountpoint of the dataset `<pool>/li
 - Pre-create re-verification of both files (Phase 2).
 - Group-writable staging directory refuses before zvol and VM.
 
-## 6. Account source (decided: configured qemu.conf, fail-closed)
+## 6. Account source (hybrid, fail-closed)
 
-The writer no longer takes the account from a running process. Refusals happen in `_check_inputs`, before any write:
+Checks run in this order, before any write. `/etc/libvirt/qemu.conf` is read read-only (`O_NOFOLLOW`, regular file, at most 64 KiB). A missing, unreadable, oversized, non-regular, or non-UTF-8 file is refused. Then the account must exist, be non-root, and pass the `runuser` probe (unchanged). Then exactly one rule applies. The rule used is recorded in the manifest as `account_source.rule`.
 
-1. `/etc/libvirt/qemu.conf` is read read-only (`O_NOFOLLOW`, regular file, bounded to 64 KiB). Missing or unreadable → refuse.
-2. Exactly one active, quoted `user = "<name>"` line is required. No user line, a commented-out line, or duplicates → refuse. An optional `group = "<name>"` line is recorded.
-3. The configured user must equal the target record's `service_account`. Mismatch → refuse before any account lookup.
-4. The account must exist, be non-root, and pass the `runuser` execution probe. Otherwise → refuse.
-5. Any running `qemu-system*` process (read with a bounded `ps -eo euid=,comm=`) must have an effective UID equal to the account. A process that disagrees → refuse. **No running process is accepted** (`process_agreement: none running`); a process that agrees is recorded as `agreed`.
+| Rule | Condition in `qemu.conf` | Required | Recorded `rule` |
+|---|---|---|---|
+| 1 | exactly one active quoted `user = "<name>"` line | `<name>` equals the target account; every running `qemu-system*` process has the account's euid (zero processes is allowed) | `qemu_conf_user_line` |
+| 2 | **no** active user line | at least one running `qemu-system*` process, and **all** of them have the account's euid | `process_agreement_without_user_line` |
 
-The result is written to the manifest as `account_source`: `{source, configured_user, configured_group, uid, process_agreement}`.
+Refused before any write, under either rule:
 
-Tests: missing file, no user line, duplicate user lines, commented-out user, mismatched user, root user, missing account, running process that disagrees, running process that agrees, no process running, and group line optional. Writer-level refusals (missing file, no user line, mismatched user, root, disagreeing process) each assert zero client writes and no operation record.
+- file missing, unreadable, oversized, non-regular, or non-UTF-8;
+- more than one active user line, or more than one active group line;
+- rule 1: configured user is not the target account;
+- rule 2: no running `qemu-system*` process;
+- any running `qemu-system*` process whose euid differs from the account;
+- account missing, root, or `runuser` probe fails.
+
+The `group =` line stays optional and is recorded, not enforced (section 2).
+
+**Why rule 2 needs a running VM.** With no user line, libvirt uses its built-in default. The only evidence of the account is then the euid of the VM processes that are running. Requiring at least one process and requiring all of them to agree is the strongest evidence available without starting a VM. If no VM is running, the writer refuses. This is a deliberate limit: rule 2 cannot be satisfied on a host with no running VM.
+
+**Tests.** Unit tests in `QemuConfSourceTests`: rule 1 (matching, mismatched, root, missing account, disagreeing process, agreeing process, no process); rule 2 (no process refuses; two agreeing processes proceed and record `process_agreement_without_user_line`; one disagreeing process refuses); duplicate user lines refused; missing file refused. Writer-level tests assert zero client writes and no operation record for each refusal, and assert the recorded `rule` for each accepted run.
 
 ## 7. Not proven
 
 - Live read by the VM process (`live_vm_process_readable_verified` stays `False` until a running-VM check in Phase 4).
-- Whether `qemu.conf` on this TrueNAS build names the user the VM process actually runs as. The preflight prints the configured value; a live VM is the only proof of the actual process user.
+- Under rule 2, the process list is the only evidence of the account, so a misconfigured libvirt default that the running processes do not reflect is not detectable without a live VM.
+- Under rule 1, whether the configured user is the one the VM process actually runs as is confirmed only by the process list, if any VM is running.
 - Whether TrueNAS's VM sandbox can see `/mnt/<pool>/...` at the same path.
 - Behaviour of the installer reading a 0600 CDROM image owned by the VM account.
 - Anything on a non-Beta.2 build.
@@ -152,14 +163,17 @@ x OK /mnt/<pool>/linux-vms               # or: absent (writer will create) /mnt/
 
 ### Blockers
 
-- `MISSING account` or `MISSING runuser`.
-- `no active user/group line` or a configured `user` that is not exactly the account name, or two user lines.
-- Any `qemu-system` row whose euid differs from the account uid.
-- `MISSING pool mountpoint /mnt/<pool>`.
-- `x DENIED /mnt/<pool>` (the account cannot traverse the pool mountpoint).
-- `x DENIED /mnt/<pool>/linux-vms` **when that path exists**.
+Stop Phase 4 if any of these appear:
 
-**Not blockers:** `absent (writer will create) /mnt/<pool>/linux-vms`, `no ... dataset (writer will create)`, and an empty process list.
+- `MISSING account` or `MISSING runuser`.
+- `MISSING pool mountpoint /mnt/<pool>`, or `x DENIED /mnt/<pool>`.
+- `x DENIED /mnt/<pool>/linux-vms`, **when that path exists**.
+- Any `qemu-system` row whose euid differs from the account uid (blocks under either rule).
+- Account source, section 6:
+  - `qemu.conf` has a user line that is not exactly the account name, or two user lines (rule 1 fails).
+  - `qemu.conf` has **no** user line and **no** `qemu-system` row is shown (rule 2 needs at least one running VM process).
+
+**Not blockers:** `absent (writer will create) /mnt/<pool>/linux-vms`, `no ... dataset (writer will create)`, and `x DENIED` lines for paths that do not exist.
 
 The script reads state only; `zfs list` and `stat` are read-only.
 

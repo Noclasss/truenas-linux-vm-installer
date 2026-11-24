@@ -345,8 +345,8 @@ def _verify_vm_process_account(
     return account
 
 
-def _configured_qemu_identity(path: Path) -> tuple[str, str | None]:
-    """Read the one active quoted user (and optional group) from libvirt qemu.conf, read-only and bounded."""
+def _configured_qemu_identity(path: Path) -> tuple[str | None, str | None]:
+    """Read the active quoted user (None if absent) and group from libvirt qemu.conf, read-only and bounded."""
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except OSError as exc:
@@ -374,26 +374,35 @@ def _configured_qemu_identity(path: Path) -> tuple[str, str | None]:
         match = re.fullmatch(r'(user|group)\s*=\s*"([a-z_][a-z0-9_-]{0,31})"\s*', line)
         if match:
             values[match.group(1)].append(match.group(2))
-    if len(values["user"]) != 1:
-        raise DesktopWriterError("libvirt qemu.conf must contain exactly one active quoted user line; no write attempted")
+    if len(values["user"]) > 1:
+        raise DesktopWriterError("libvirt qemu.conf has more than one active user line; no write attempted")
     if len(values["group"]) > 1:
         raise DesktopWriterError("libvirt qemu.conf has more than one active group line; no write attempted")
-    return values["user"][0], (values["group"][0] if values["group"] else None)
+    user = values["user"][0] if values["user"] else None
+    return user, (values["group"][0] if values["group"] else None)
 
 
 def _verify_account_source(
     service_account: str, *, qemu_conf: Path | None = None, runner: Callable[..., Any] | None = None,
 ) -> tuple[pwd.struct_passwd, dict[str, Any]]:
-    """Fail-closed VM-process account: configured qemu.conf user, local account, runuser, and any running QEMU agreement."""
+    """Fail-closed VM-process account. Rule 1: a qemu.conf user line must name the account and any running QEMU must agree.
+    Rule 2: with no user line, at least one running qemu-system process must exist and all must have the account's euid.
+    """
     configured_user, configured_group = _configured_qemu_identity(QEMU_CONF if qemu_conf is None else Path(qemu_conf))
-    if configured_user != service_account:
+    if configured_user is not None and configured_user != service_account:
         raise DesktopWriterError("configured libvirt QEMU user does not match the target VM-process account; no write attempted")
     account = _verify_vm_process_account(service_account, runner=runner)
     owners = _active_qemu_process_owners()
     if any(uid != account.pw_uid for uid, _name in owners):
         raise DesktopWriterError("a running qemu-system process is not owned by the configured account; no write attempted")
+    if configured_user is None and not owners:
+        raise DesktopWriterError(
+            "qemu.conf has no user line and no qemu-system process is running to confirm the account; no write attempted"
+        )
+    rule = "qemu_conf_user_line" if configured_user is not None else "process_agreement_without_user_line"
     source = {
         "source": "qemu.conf",
+        "rule": rule,
         "configured_user": configured_user,
         "configured_group": configured_group,
         "uid": account.pw_uid,

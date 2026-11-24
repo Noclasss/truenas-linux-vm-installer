@@ -321,7 +321,7 @@ class QemuConfSourceTests(unittest.TestCase):
     def test_matching_user_and_no_running_process_is_accepted(self):
         account, source = self.verify()
         self.assertEqual(account.pw_uid, 107)
-        self.assertEqual(source, {"source": "qemu.conf", "configured_user": "vm-runner",
+        self.assertEqual(source, {"source": "qemu.conf", "rule": "qemu_conf_user_line", "configured_user": "vm-runner",
                                   "configured_group": "vm-runner", "uid": 107, "process_agreement": "none running"})
 
     def test_running_process_that_agrees_is_recorded(self):
@@ -338,14 +338,32 @@ class QemuConfSourceTests(unittest.TestCase):
         with self.assertRaisesRegex(DesktopWriterError, "missing or unreadable"):
             self.verify(conf=self.conf.parent / "absent.conf")
 
-    def test_qemu_conf_without_user_line_is_refused(self):
+    def test_no_user_line_and_no_running_process_is_refused(self):
         self.conf.write_text('#user = "libvirt-qemu"\ngroup = "vm-runner"\n')
-        with self.assertRaisesRegex(DesktopWriterError, "exactly one active quoted user line"):
+        with self.assertRaisesRegex(DesktopWriterError, "no qemu-system process is running"):
             self.verify()
+
+    def test_no_user_line_all_processes_agree_proceeds_by_process_rule(self):
+        self.conf.write_text('group = "vm-runner"\n')
+        with patch.object(writer_module, "_active_qemu_process_owners", return_value={(107, "vm-runner"), (107, "vm-runner")}):
+            _, source = self.verify()
+        self.assertEqual(source["rule"], "process_agreement_without_user_line")
+        self.assertIsNone(source["configured_user"])
+        self.assertEqual(source["process_agreement"], "agreed")
+
+    def test_no_user_line_one_disagreeing_process_is_refused(self):
+        self.conf.write_text('group = "vm-runner"\n')
+        with patch.object(writer_module, "_active_qemu_process_owners", return_value={(107, "vm-runner"), (108, "other")}):
+            with self.assertRaisesRegex(DesktopWriterError, "not owned by the configured account"):
+                self.verify()
+
+    def test_user_line_rule_is_recorded(self):
+        _, source = self.verify()
+        self.assertEqual(source["rule"], "qemu_conf_user_line")
 
     def test_duplicate_user_lines_are_refused(self):
         self.conf.write_text('user = "vm-runner"\nuser = "vm-runner"\n')
-        with self.assertRaisesRegex(DesktopWriterError, "exactly one active quoted user line"):
+        with self.assertRaisesRegex(DesktopWriterError, "more than one active user line"):
             self.verify()
 
     def test_mismatched_configured_user_is_refused_before_account_lookup(self):
@@ -750,10 +768,26 @@ class DesktopLiveWriterTests(unittest.TestCase):
             self.qemu_conf.unlink()
             self.refused_with_zero_writes(directory, "missing or unreadable")
 
-    def test_account_qemu_conf_without_user_line_refuses_with_zero_writes(self):
+    def test_account_no_user_line_and_no_running_process_refuses_with_zero_writes(self):
         with tempfile.TemporaryDirectory() as directory:
             self.qemu_conf.write_text("group = \"kvm\"\n")
-            self.refused_with_zero_writes(directory, "exactly one active quoted user line")
+            with patch.object(writer_module, "_active_qemu_process_owners", return_value=set()):
+                self.refused_with_zero_writes(directory, "no qemu-system process is running")
+
+    def test_account_no_user_line_all_processes_agree_proceeds_and_records_rule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.qemu_conf.write_text("group = \"kvm\"\n")
+            result, client, writer = self.run_writer(directory)
+            manifest = json.loads(Path(result["manifest_path"]).read_text())
+            self.assertEqual(manifest["account_source"]["rule"], "process_agreement_without_user_line")
+            self.assertIsNone(manifest["account_source"]["configured_user"])
+
+    def test_account_no_user_line_one_disagreeing_process_refuses_with_zero_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.qemu_conf.write_text("group = \"kvm\"\n")
+            uid = pwd.getpwuid(os.geteuid()).pw_uid if os.geteuid() else 2001
+            with patch.object(writer_module, "_active_qemu_process_owners", return_value={(uid, "me"), (uid + 1, "other")}):
+                self.refused_with_zero_writes(directory, "not owned by the configured account")
 
     def test_account_mismatched_configured_user_refuses_with_zero_writes(self):
         with tempfile.TemporaryDirectory() as directory:
