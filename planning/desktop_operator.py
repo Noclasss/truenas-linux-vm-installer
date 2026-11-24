@@ -22,6 +22,8 @@ import uuid
 from .desktop_catalogue import DesktopCatalogueError, verify_desktop_source_id
 from .desktop_autoinstall import DesktopAutoinstallError, build_desktop_autoinstall_user_data
 from .desktop_integrity import DesktopIntegrityError, verify_desktop_artifacts
+from .mock_install import LIVE_PROFILE_ALLOWLIST
+from .ubuntu_desktop import PROFILE_ID
 from .desktop_live_writer import (
     DesktopArtifactInputs,
     DesktopCreateOnlyWriter,
@@ -450,6 +452,8 @@ def main(argv: list[str] | None = None, *, input_fn: Callable[[str], str] | None
                 if client is not None:
                     client.close()
             return 0
+        if args.action == "create" and PROFILE_ID not in LIVE_PROFILE_ALLOWLIST:
+            raise OperatorWorkflowError("create is refused: profile is not allowlisted for live writes; no middleware contacted")
         record = _read_target(args.target)
         fixture = load_reviewed_desktop_fixture()
         request, artifacts, manifest_path = _validate_record_fields(record, fixture)

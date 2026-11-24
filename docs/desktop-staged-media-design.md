@@ -29,7 +29,7 @@ Rationale:
 ## Constraints this decision does not resolve
 
 - **How bytes reach the dataset is unresolved.** Copying the verified ISO and seed into `/mnt/...` needs host-side file access. The plan forbids host writes outside an authorized disposable target, so this is a live-gate question, not an offline one.
-- **Re-verification before attach.** `planning/desktop_integrity.py::verify_staged_iso` re-hashes a staged ISO copy against the pinned size and SHA-256, and `rehearse()` now calls it immediately before the CDROM attach (offline tests cover match, wrong size, wrong SHA-256, and missing file). The NoCloud seed is pinned at build time: `seed_pin_from_file` records its exact size and SHA-256, the ownership manifest stores that pin before the first write, and `verify_staged_seed` re-hashes the staged seed before `attach_seed`. The pin is produced per seed build and is never reused across rebuilds (the password hash salt makes each build's bytes differ). No live writer exists yet.
+- **Re-verification before attach.** `planning/desktop_integrity.py::verify_staged_iso` re-hashes a staged ISO copy against the pinned size and SHA-256, and `rehearse()` now calls it immediately before the CDROM attach (offline tests cover match, wrong size, wrong SHA-256, and missing file). The NoCloud seed is pinned at build time: `seed_pin_from_file` records its exact size and SHA-256, the ownership manifest stores that pin before the first write, and `verify_staged_seed` re-hashes the staged seed before `attach_seed`. The pin is produced per seed build and is never reused across rebuilds (the password hash salt makes each build's bytes differ). The create-only writer (`planning/desktop_live_writer.py`) applies this check to the staged seed before its device attach, behind the allowlist gate below.
 - **Known limitation: check position.** In the offline sequence the check runs after the VM and disk are created. A failed ISO check therefore aborts after VM and disk creation and leaves them for manual cleanup; nothing is rolled back or deleted automatically. Moving the check earlier needs staging before creation, which is follow-up work.
 - **Permissions.** `libvirt-qemu` must be able to read the staged files. The 2026-10-22 staging probe showed traversal and listing work but a mode-0600 file is unreadable, so staged files need an explicit read mode. Not validated on a live target.
 
@@ -37,3 +37,7 @@ Rationale:
 
 - `planning/test_desktop_finalize.py` checks that planned media paths equal those in the reviewed write intents.
 - The fake backend records the attached CDROM and RAW paths and refuses detach unless read-back matches the plan.
+
+## Live gate
+
+**`LIVE_PROFILE_ALLOWLIST` (`planning/mock_install.py`) is the only live gate. An empty allowlist means no live writes: `DesktopCreateOnlyWriter.create` and `desktop_operator.py create` refuse before any middleware write.** Allowlisting a profile is a review decision; nothing on main adds to it.
