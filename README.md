@@ -176,3 +176,11 @@ Actual ISO verification and read-only host preflight are separate evidence stage
 ## Development
 
 Implementation work belongs on a feature branch and should be reviewed in an unmerged pull request. Do not treat the project as usable until installer code, tests, and supported-version documentation are published and reviewed.
+
+## Read-only staging preflight
+
+Before any live Desktop test, run this on the TrueNAS host as root. It fetches `scripts/staging-preflight.sh` from a pinned commit, checks its SHA-256, and runs it. It only reads state: no writes, no middleware calls, and no VM start. Replace `REF` and `SHA` with the values from the latest release notes or PR, and `POOL` with your pool name.
+
+```sh
+REF=<commit>; SHA=<sha256>; POOL=<pool>; d=$(mktemp -d) && curl -fsSL --proto '=https' "https://raw.githubusercontent.com/Noclasss/truenas-linux-vm-installer/$REF/scripts/staging-preflight.sh" -o "$d/p.sh" && echo "$SHA  $d/p.sh" | sha256sum -c - && sh "$d/p.sh" "$POOL"; rm -rf "$d"
+```
