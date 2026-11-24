@@ -22,6 +22,8 @@ import uuid
 from .desktop_catalogue import DesktopCatalogueError, verify_desktop_source_id
 from .desktop_autoinstall import DesktopAutoinstallError, build_desktop_autoinstall_user_data
 from .desktop_integrity import DesktopIntegrityError, verify_desktop_artifacts
+from .mock_install import LIVE_PROFILE_ALLOWLIST
+from .ubuntu_desktop import PROFILE_ID
 from .desktop_live_writer import (
     DesktopArtifactInputs,
     DesktopCreateOnlyWriter,
@@ -470,6 +472,9 @@ def main(argv: list[str] | None = None, *, input_fn: Callable[[str], str] | None
             _output(report)
             return 0
         if args.action == "create":
+            if PROFILE_ID not in LIVE_PROFILE_ALLOWLIST:
+                writer.client.close()
+                raise OperatorWorkflowError("create refused: live profile is not allowlisted; no confirmation prompt or middleware write")
             _output(report, stream=sys.stderr)
             if not injected_input and not sys.stdin.isatty():
                 writer.client.close()

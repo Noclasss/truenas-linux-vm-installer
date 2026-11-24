@@ -17,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+from typing import Any
 
 if __package__:
     from . import ubuntu_desktop as desktop
@@ -178,7 +179,7 @@ def valid_seed_pin(pin: object) -> bool:
     )
 
 
-def seed_pin_from_file(path: Path) -> dict[str, object]:
+def seed_pin_from_file(path: Path) -> dict[str, Any]:
     """Build-time pin: hash the exact seed bytes read through the safe opener."""
     try:
         with _open_regular(Path(path)) as stream:

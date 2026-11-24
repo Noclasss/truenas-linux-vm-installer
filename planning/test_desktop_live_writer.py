@@ -9,6 +9,7 @@ import stat
 import subprocess
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -169,7 +170,7 @@ def _fixture_with_test_pins(testcase, directory):
     iso_bytes = b"synthetic signed desktop image"
     seed_bytes = b"synthetic private seed"
     iso.write_bytes(iso_bytes)
-    seed.write_bytes(seed_bytes)
+    seed.write_bytes(seed_bytes + bytes(1024 - len(seed_bytes)))
     os.chmod(seed, 0o600)
     digest = hashlib.sha256(iso_bytes).hexdigest()
     testcase.enterContext(patch.object(writer_module.desktop, "ARTIFACT_SIZE_BYTES", len(iso_bytes)))
@@ -322,6 +323,10 @@ class DesktopLiveWriterTests(unittest.TestCase):
         self._runuser_patch = patch.object(writer_module.subprocess, "run", return_value=completed)
         self._runuser_patch.start()
         self.addCleanup(self._runuser_patch.stop)
+        # Tests exercise the create path as the allowlisted profile; the empty-allowlist refusal is tested separately.
+        self._allowlist_patch = patch.object(writer_module, "LIVE_PROFILE_ALLOWLIST", frozenset({writer_module.desktop.PROFILE_ID}))
+        self._allowlist_patch.start()
+        self.addCleanup(self._allowlist_patch.stop)
 
     def writer(self, directory, *, failure=None, wrong_readback_at=None, display_count=0, healthy=True,
                access_probe=None, fail_vm_readback=False, device_readback_issue=None,
@@ -604,6 +609,63 @@ class DesktopLiveWriterTests(unittest.TestCase):
                 writer.create(confirmation=self.confirmation(writer))
             self.assertFalse(client.writes)
             self.assertFalse((Path(directory) / "operation.json").exists())
+
+    def test_empty_allowlist_refuses_create_with_zero_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, mountpoint = self.writer(directory)
+            confirmation = self.confirmation(writer)
+            with patch.object(writer_module, "LIVE_PROFILE_ALLOWLIST", frozenset()), \
+                 patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint), \
+                 self.assertRaisesRegex(DesktopWriterError, "not allowlisted"):
+                writer.create(confirmation=confirmation)
+            self.assertEqual(client.calls, [])
+            self.assert_no_create_state(client, directory)
+
+    def _refused_before_seed_attach(self, directory, *, patches=(), seed_bytes=None):
+        writer, client, mountpoint = self.writer(directory)
+        if seed_bytes is not None:
+            (Path(directory) / "seed.img").write_bytes(seed_bytes)
+        confirmation = self.confirmation(writer)
+        with patch.object(writer, "_require_root", return_value=None), \
+             patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint), \
+             ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            with self.assertRaises(DesktopWriterError):
+                writer.create(confirmation=confirmation)
+        seed_attaches = [p for m, p in client.writes if m == "vm.device.create" and p[0]["attributes"]["dtype"] == "RAW"]
+        self.assertEqual(seed_attaches, [])
+        return client
+
+    def test_seed_pin_mismatch_aborts_with_no_seed_attach(self):
+        with tempfile.TemporaryDirectory() as directory:
+            mismatch = patch.object(writer_module, "verify_staged_seed",
+                                    side_effect=writer_module.DesktopIntegrityError("pin mismatch"))
+            client = self._refused_before_seed_attach(directory, patches=[mismatch])
+            self.assertTrue(any(m == "vm.device.create" for m, _ in client.writes))  # disk/CDROM attached first
+            manifest = json.loads((Path(directory) / "operation.json").read_text())
+            self.assertEqual(manifest["status"], "reconcile_required")
+
+    def test_seed_wrong_size_aborts_before_any_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, mountpoint = self.writer(directory)
+            (Path(directory) / "seed.img").write_bytes(b"short")
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint), \
+                 self.assertRaisesRegex(DesktopWriterError, "fixed seed size"):
+                writer.create(confirmation="x")
+            self.assert_no_create_state(client, directory)
+
+    def test_missing_seed_aborts_before_any_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, mountpoint = self.writer(directory)
+            (Path(directory) / "seed.img").unlink()
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint), \
+                 self.assertRaises(DesktopWriterError):
+                writer.create(confirmation="x")
+            self.assert_no_create_state(client, directory)
 
     def test_unexpected_displays_from_vm_create_stop_and_record_reconciliation_state(self):
         with tempfile.TemporaryDirectory() as directory:
