@@ -71,6 +71,9 @@ _VM_NAME = re.compile(r"[A-Za-z][A-Za-z0-9]{0,62}\Z")
 _POOL_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,62}\Z")
 _SOURCE_IDS = frozenset({"ubuntu-desktop-minimal", "ubuntu-desktop"})
 _COPY_CHUNK = 1024 * 1024
+# Host config read-only to name the libvirt QEMU user; missing or unreadable means refuse.
+QEMU_CONF = Path("/etc/libvirt/qemu.conf")
+_QEMU_CONF_MAX = 64 * 1024
 
 
 class DesktopWriterError(RuntimeError):
@@ -230,7 +233,7 @@ def _device_attributes_match(actual: Any, expected: dict[str, Any]) -> bool:
     )
 
 
-def _parse_qemu_process_owner(output: bytes) -> tuple[int, str]:
+def _parse_qemu_process_owners(output: bytes) -> set[tuple[int, str]]:
     try:
         text = output.decode("utf-8", "strict")
     except UnicodeDecodeError as exc:
@@ -252,12 +255,10 @@ def _parse_qemu_process_owner(output: bytes) -> tuple[int, str]:
         except (KeyError, OSError, ValueError) as exc:
             raise DesktopWriterError("active QEMU process UID is not mapped to a host account") from exc
         owners.add((account.pw_uid, account.pw_name))
-    if len(owners) != 1:
-        raise DesktopWriterError("exactly one active QEMU service-account identity is required")
-    return next(iter(owners))
+    return owners
 
 
-def _active_qemu_process_owner() -> tuple[int, str]:
+def _active_qemu_process_owners() -> set[tuple[int, str]]:
     """Identify the one active QEMU owner without buffering unbounded output."""
     ps = shutil.which("ps")
     if not ps or not os.path.isabs(ps):
@@ -289,7 +290,7 @@ def _active_qemu_process_owner() -> tuple[int, str]:
         process.wait(timeout=max(0.01, deadline - time.monotonic()))
         if process.returncode != 0:
             raise DesktopWriterError("active QEMU process ownership query failed")
-        return _parse_qemu_process_owner(bytes(data))
+        return _parse_qemu_process_owners(bytes(data))
     except (OSError, subprocess.SubprocessError) as exc:
         raise DesktopWriterError("active QEMU process ownership could not be queried") from exc
     finally:
@@ -320,9 +321,6 @@ def _verify_vm_process_account(
     if not runuser or not os.path.isabs(runuser):
         raise DesktopWriterError("runuser is required at an absolute host PATH location for VM-process checks")
     execute = runner or subprocess.run
-    active_uid, active_name = _active_qemu_process_owner()
-    if (active_uid, active_name) != (account.pw_uid, account.pw_name):
-        raise DesktopWriterError("selected service account does not match the active QEMU process owner")
     probe = (
         "import os; "
         f"assert os.geteuid() == {account.pw_uid}; "
@@ -345,6 +343,63 @@ def _verify_vm_process_account(
             "runuser cannot execute local checks as the selected VM-process service account"
         )
     return account
+
+
+def _configured_qemu_identity(path: Path) -> tuple[str, str | None]:
+    """Read the one active quoted user (and optional group) from libvirt qemu.conf, read-only and bounded."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as exc:
+        raise DesktopWriterError("libvirt qemu.conf is missing or unreadable; no write attempted") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _QEMU_CONF_MAX:
+            raise DesktopWriterError("libvirt qemu.conf is not a bounded regular file; no write attempted")
+        data = os.read(fd, _QEMU_CONF_MAX + 1)
+    except OSError as exc:
+        raise DesktopWriterError("libvirt qemu.conf is missing or unreadable; no write attempted") from exc
+    finally:
+        os.close(fd)
+    if len(data) > _QEMU_CONF_MAX:
+        raise DesktopWriterError("libvirt qemu.conf exceeds its size bound; no write attempted")
+    try:
+        text = data.decode("utf-8", "strict")
+    except UnicodeDecodeError as exc:
+        raise DesktopWriterError("libvirt qemu.conf encoding is invalid; no write attempted") from exc
+    values: dict[str, list[str]] = {"user": [], "group": []}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.fullmatch(r'(user|group)\s*=\s*"([a-z_][a-z0-9_-]{0,31})"\s*', line)
+        if match:
+            values[match.group(1)].append(match.group(2))
+    if len(values["user"]) != 1:
+        raise DesktopWriterError("libvirt qemu.conf must contain exactly one active quoted user line; no write attempted")
+    if len(values["group"]) > 1:
+        raise DesktopWriterError("libvirt qemu.conf has more than one active group line; no write attempted")
+    return values["user"][0], (values["group"][0] if values["group"] else None)
+
+
+def _verify_account_source(
+    service_account: str, *, qemu_conf: Path | None = None, runner: Callable[..., Any] | None = None,
+) -> tuple[pwd.struct_passwd, dict[str, Any]]:
+    """Fail-closed VM-process account: configured qemu.conf user, local account, runuser, and any running QEMU agreement."""
+    configured_user, configured_group = _configured_qemu_identity(QEMU_CONF if qemu_conf is None else Path(qemu_conf))
+    if configured_user != service_account:
+        raise DesktopWriterError("configured libvirt QEMU user does not match the target VM-process account; no write attempted")
+    account = _verify_vm_process_account(service_account, runner=runner)
+    owners = _active_qemu_process_owners()
+    if any(uid != account.pw_uid for uid, _name in owners):
+        raise DesktopWriterError("a running qemu-system process is not owned by the configured account; no write attempted")
+    source = {
+        "source": "qemu.conf",
+        "configured_user": configured_user,
+        "configured_group": configured_group,
+        "uid": account.pw_uid,
+        "process_agreement": "agreed" if owners else "none running",
+    }
+    return account, source
 
 
 class _CaptureMethodsClient:
@@ -390,6 +445,7 @@ class DesktopCreateOnlyWriter:
         self.reported_service_account_uid = reported_service_account_uid
         self.guest_identity = dict(guest_identity) if guest_identity is not None else None
         self._verified_service_account: dict[str, Any] | None = None
+        self._account_source: dict[str, Any] | None = None
         self.access_probe = access_probe
         self.artifact_verifier = artifact_verifier
         self.catalogue_verifier = catalogue_verifier
@@ -400,7 +456,8 @@ class DesktopCreateOnlyWriter:
             raise DesktopWriterError("create-only adapter requires an authenticated root host process")
 
     def _require_vm_process_account(self) -> pwd.struct_passwd:
-        return _verify_vm_process_account(self.service_account)
+        account, self._account_source = _verify_account_source(self.service_account)
+        return account
 
     def _check_inputs(self) -> tuple[dict[str, Any], dict[str, int], str, int, str, dict[str, Any], dict[str, Any]]:
         req = self.request
@@ -661,6 +718,7 @@ class DesktopCreateOnlyWriter:
             "format": _FORMAT, "run_id": run_id, "status": "preparing",
             "target_key": target_key,
             "plan": plan, "plan_digest": plan_digest, "seed_pin": self.seed_pin,
+            "account_source": self._account_source,
             "inventory_before": {"shared_parent_exists": shared_existed},
             "intended_resources": intended_resources,
             "resources": [], "files": [], "pending": None, "observations": [],

@@ -209,27 +209,26 @@ class ActiveQemuProcessOwnerTests(unittest.TestCase):
              patch.object(writer_module.os, "read", side_effect=[b"0 qemu-ga\n986 qemu-system-x86\n", b""]),
              patch.object(writer_module.pwd, "getpwuid", return_value=account),
         ):
-            self.assertEqual(writer_module._active_qemu_process_owner(), (986, "libvirt-qemu"))
+            self.assertEqual(writer_module._active_qemu_process_owners(), {(986, "libvirt-qemu")})
         self.assertEqual(popen.call_args.args[0], ["/usr/bin/ps", "-eo", "euid=,comm="])
         process.wait.assert_called_once()
         process.kill.assert_not_called()
 
-    def test_qemu_inventory_must_have_one_mapped_owner(self):
+    def test_qemu_inventory_returns_every_mapped_qemu_owner(self):
         account = pwd.struct_passwd(("vm-runner", "x", 107, 107, "VM process", "/", "/usr/sbin/nologin"))
         root_account = pwd.struct_passwd(("root", "x", 100, 0, "root", "/root", "/bin/sh"))
         accounts = {100: root_account, 107: account}
         with patch.object(writer_module.pwd, "getpwuid", side_effect=accounts.get):
             self.assertEqual(
-                writer_module._parse_qemu_process_owner(b"107 qemu-system-x86_64" + bytes([10])),
-                (107, "vm-runner"),
+                writer_module._parse_qemu_process_owners(b"107 qemu-system-x86_64" + bytes([10])),
+                {(107, "vm-runner")},
             )
-            with self.assertRaisesRegex(DesktopWriterError, "exactly one active QEMU"):
-                writer_module._parse_qemu_process_owner(
-                    b"100 qemu-system-x86_64" + bytes([10])
-                    + b"107 qemu-system-x86_64" + bytes([10])
-                )
-            with self.assertRaisesRegex(DesktopWriterError, "exactly one active QEMU"):
-                writer_module._parse_qemu_process_owner(b"1 systemd" + bytes([10]))
+            self.assertEqual(
+                writer_module._parse_qemu_process_owners(
+                    b"100 qemu-system-x86_64" + bytes([10]) + b"107 qemu-system-x86_64" + bytes([10])),
+                {(100, "root"), (107, "vm-runner")},
+            )
+            self.assertEqual(writer_module._parse_qemu_process_owners(b"1 systemd" + bytes([10])), set())
 
     def test_qemu_inventory_output_cap_kills_process(self):
         process = self.process()
@@ -240,7 +239,7 @@ class ActiveQemuProcessOwnerTests(unittest.TestCase):
              patch.object(writer_module.os, "read", side_effect=[b"x" * 4096] * 16 + [b"x"]),
         ):
             with self.assertRaisesRegex(DesktopWriterError, "output bound"):
-                writer_module._active_qemu_process_owner()
+                writer_module._active_qemu_process_owners()
         process.kill.assert_called_once()
 
 
@@ -281,8 +280,7 @@ class ServiceAccountPreflightTests(unittest.TestCase):
         with patch.object(writer_module.pwd, "getpwnam", return_value=self.account()), \
              patch.object(writer_module.shutil, "which", return_value="/usr/sbin/runuser"), \
              patch.object(writer_module.subprocess, "run", return_value=completed) as run:
-            with patch.object(writer_module, "_active_qemu_process_owner", return_value=(107, "vm-runner")):
-                account = writer_module._verify_vm_process_account("vm-runner")
+            account = writer_module._verify_vm_process_account("vm-runner")
         self.assertEqual(account.pw_uid, 107)
         argv = run.call_args.args[0]
         self.assertEqual(argv[:4], ["/usr/sbin/runuser", "-u", "vm-runner", "--"])
@@ -290,33 +288,105 @@ class ServiceAccountPreflightTests(unittest.TestCase):
         self.assertIn("/dev/null", argv[-1])
         self.assertEqual(run.call_args.kwargs["env"]["PATH"], os.defpath)
 
-    def test_active_qemu_owner_must_match_selected_service_account(self):
-        with (
-            patch.object(writer_module.pwd, "getpwnam", return_value=self.account()),
-            patch.object(writer_module.shutil, "which", return_value="/usr/sbin/runuser"),
-            patch.object(writer_module, "_active_qemu_process_owner", return_value=(108, "vm-runner")),
-            patch.object(writer_module.subprocess, "run") as run,
-        ):
-            with self.assertRaisesRegex(DesktopWriterError, "does not match the active QEMU"):
-                writer_module._verify_vm_process_account("vm-runner")
-        run.assert_not_called()
-
     def test_runuser_failure_is_a_prerequisite_refusal(self):
         completed = subprocess.CompletedProcess(args=[], returncode=1)
         with patch.object(writer_module.pwd, "getpwnam", return_value=self.account()), \
              patch.object(writer_module.shutil, "which", return_value="/usr/sbin/runuser"), \
              patch.object(writer_module.subprocess, "run", return_value=completed):
-            with patch.object(writer_module, "_active_qemu_process_owner", return_value=(107, "vm-runner")):
-                with self.assertRaisesRegex(DesktopWriterError, "cannot execute local checks"):
-                    writer_module._verify_vm_process_account("vm-runner")
+            with self.assertRaisesRegex(DesktopWriterError, "cannot execute local checks"):
+                writer_module._verify_vm_process_account("vm-runner")
+
+
+class QemuConfSourceTests(unittest.TestCase):
+    """Account source: configured libvirt QEMU user, local account, runuser, and running-process agreement."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.conf = Path(tmp.name) / "qemu.conf"
+        self.conf.write_text('user = "vm-runner"\ngroup = "vm-runner"\n')
+        account = pwd.struct_passwd(("vm-runner", "x", 107, 107, "VM process", "/", "/usr/sbin/nologin"))
+        for patcher in (
+            patch.object(writer_module.pwd, "getpwnam", return_value=account),
+            patch.object(writer_module.shutil, "which", return_value="/usr/sbin/runuser"),
+            patch.object(writer_module.subprocess, "run", return_value=subprocess.CompletedProcess(args=[], returncode=0)),
+            patch.object(writer_module, "_active_qemu_process_owners", return_value=set()),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def verify(self, conf=None):
+        return writer_module._verify_account_source("vm-runner", qemu_conf=self.conf if conf is None else conf)
+
+    def test_matching_user_and_no_running_process_is_accepted(self):
+        account, source = self.verify()
+        self.assertEqual(account.pw_uid, 107)
+        self.assertEqual(source, {"source": "qemu.conf", "configured_user": "vm-runner",
+                                  "configured_group": "vm-runner", "uid": 107, "process_agreement": "none running"})
+
+    def test_running_process_that_agrees_is_recorded(self):
+        with patch.object(writer_module, "_active_qemu_process_owners", return_value={(107, "vm-runner")}):
+            _, source = self.verify()
+        self.assertEqual(source["process_agreement"], "agreed")
+
+    def test_running_process_that_disagrees_is_refused(self):
+        with patch.object(writer_module, "_active_qemu_process_owners", return_value={(108, "other")}):
+            with self.assertRaisesRegex(DesktopWriterError, "not owned by the configured account"):
+                self.verify()
+
+    def test_missing_qemu_conf_is_refused(self):
+        with self.assertRaisesRegex(DesktopWriterError, "missing or unreadable"):
+            self.verify(conf=self.conf.parent / "absent.conf")
+
+    def test_qemu_conf_without_user_line_is_refused(self):
+        self.conf.write_text('#user = "libvirt-qemu"\ngroup = "vm-runner"\n')
+        with self.assertRaisesRegex(DesktopWriterError, "exactly one active quoted user line"):
+            self.verify()
+
+    def test_duplicate_user_lines_are_refused(self):
+        self.conf.write_text('user = "vm-runner"\nuser = "vm-runner"\n')
+        with self.assertRaisesRegex(DesktopWriterError, "exactly one active quoted user line"):
+            self.verify()
+
+    def test_mismatched_configured_user_is_refused_before_account_lookup(self):
+        self.conf.write_text('user = "someone-else"\n')
+        with patch.object(writer_module.pwd, "getpwnam") as lookup:
+            with self.assertRaisesRegex(DesktopWriterError, "does not match the target VM-process account"):
+                self.verify()
+        lookup.assert_not_called()
+
+    def test_root_configured_user_is_refused(self):
+        self.conf.write_text('user = "root"\n')
+        root = pwd.struct_passwd(("root", "x", 0, 0, "root", "/root", "/bin/sh"))
+        with patch.object(writer_module.pwd, "getpwnam", return_value=root):
+            with self.assertRaisesRegex(DesktopWriterError, "must be a non-root"):
+                writer_module._verify_account_source("root", qemu_conf=self.conf)
+
+    def test_missing_account_is_refused(self):
+        with patch.object(writer_module.pwd, "getpwnam", side_effect=KeyError("vm-runner")):
+            with self.assertRaisesRegex(DesktopWriterError, "service account is unavailable"):
+                self.verify()
+
+    def test_qemu_conf_group_line_is_optional_but_recorded(self):
+        self.conf.write_text('user = "vm-runner"\n')
+        _, source = self.verify()
+        self.assertIsNone(source["configured_group"])
 
 
 class DesktopLiveWriterTests(unittest.TestCase):
     def setUp(self):
         service_account = pwd.getpwuid(os.geteuid()).pw_name if os.geteuid() else "nobody"
+        gid_name = pwd.getpwnam(service_account).pw_gid
+        qemu_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(qemu_dir.cleanup)
+        self.qemu_conf = Path(qemu_dir.name) / "qemu.conf"
+        self.qemu_conf.write_text(f'user = "{service_account}"\ngroup = "{gid_name}"\n')
+        self._qemu_conf_patch = patch.object(writer_module, "QEMU_CONF", self.qemu_conf)
+        self._qemu_conf_patch.start()
+        self.addCleanup(self._qemu_conf_patch.stop)
         self._active_owner_patch = patch.object(
-            writer_module, "_active_qemu_process_owner",
-            return_value=(pwd.getpwnam(service_account).pw_uid, service_account),
+            writer_module, "_active_qemu_process_owners",
+            return_value={(pwd.getpwnam(service_account).pw_uid, service_account)},
         )
         self._active_owner_patch.start()
         self.addCleanup(self._active_owner_patch.stop)
@@ -393,6 +463,7 @@ class DesktopLiveWriterTests(unittest.TestCase):
             writer, client, _ = self.writer(directory)
             confirmation = self.confirmation(writer)
             writer.service_account = "root"
+            self.qemu_conf.write_text('user = "root"\n')
             root_account = pwd.struct_passwd(("root", "x", 0, 0, "root", "/root", "/bin/sh"))
             with patch.object(writer, "_require_root", return_value=None), \
                  patch.object(writer_module.pwd, "getpwnam", return_value=root_account), \
@@ -440,8 +511,9 @@ class DesktopLiveWriterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             writer, client, mountpoint = self.writer(directory, reported_service_account_uid=uid)
             writer.service_account = "vm-runner"
+            self.qemu_conf.write_text('user = "vm-runner"\n')
             with patch.object(writer_module.pwd, "getpwnam", return_value=account), \
-                 patch.object(writer_module, "_active_qemu_process_owner", return_value=(uid, "vm-runner")), \
+                 patch.object(writer_module, "_active_qemu_process_owners", return_value={(uid, "vm-runner")}), \
                  patch.object(writer_module.shutil, "which", return_value="/usr/sbin/runuser"), \
                  patch.object(writer_module.subprocess, "run", return_value=completed), \
                  patch.object(writer, "_require_root", return_value=None), \
@@ -464,14 +536,15 @@ class DesktopLiveWriterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             writer, client, _ = self.writer(directory, reported_service_account_uid=uid)
             writer.service_account = "vm-runner"
+            self.qemu_conf.write_text('user = "vm-runner"\n')
             with patch.object(writer_module.pwd, "getpwnam", return_value=account), \
-                 patch.object(writer_module, "_active_qemu_process_owner", return_value=(uid, "vm-runner")), \
+                 patch.object(writer_module, "_active_qemu_process_owners", return_value={(uid, "vm-runner")}), \
                  patch.object(writer_module.shutil, "which", return_value="/usr/sbin/runuser"), \
                  patch.object(writer_module.subprocess, "run", return_value=subprocess.CompletedProcess(args=[], returncode=0)), \
                  patch.object(writer, "_require_root", return_value=None):
                 confirmation = writer.confirmation_phrase()
                 with patch.object(writer_module.pwd, "getpwnam", return_value=changed), \
-                     patch.object(writer_module, "_active_qemu_process_owner", return_value=(uid + 1, "vm-runner")), \
+                     patch.object(writer_module, "_active_qemu_process_owners", return_value={(uid + 1, "vm-runner")}), \
                      self.assertRaisesRegex(DesktopWriterError, "differs from the operator-reported UID"):
                     writer.create(confirmation=confirmation)
             self.assertEqual(client.calls, [])
@@ -661,6 +734,57 @@ class DesktopLiveWriterTests(unittest.TestCase):
             self.assert_no_zvol_or_vm(client)
             manifest = json.loads((Path(directory) / "operation.json").read_text())
             self.assertEqual(manifest["status"], "reconcile_required")
+
+    def refused_with_zero_writes(self, directory, message, *, setup=None):
+        writer, client, mountpoint = self.writer(directory)
+        if setup is not None:
+            setup(writer)
+        with patch.object(writer, "_require_root", return_value=None), \
+             patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint), \
+             self.assertRaisesRegex(DesktopWriterError, message):
+            writer.create(confirmation="x")
+        self.assert_no_create_state(client, directory)
+
+    def test_account_missing_qemu_conf_refuses_with_zero_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.qemu_conf.unlink()
+            self.refused_with_zero_writes(directory, "missing or unreadable")
+
+    def test_account_qemu_conf_without_user_line_refuses_with_zero_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.qemu_conf.write_text("group = \"kvm\"\n")
+            self.refused_with_zero_writes(directory, "exactly one active quoted user line")
+
+    def test_account_mismatched_configured_user_refuses_with_zero_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.qemu_conf.write_text('user = "someone-else"\n')
+            self.refused_with_zero_writes(directory, "does not match the target VM-process account")
+
+    def test_account_root_user_refuses_with_zero_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.qemu_conf.write_text('user = "root"\n')
+            def as_root(writer):
+                writer.service_account = "root"
+            self.refused_with_zero_writes(directory, "must be a non-root", setup=as_root)
+
+    def test_account_running_process_that_disagrees_refuses_with_zero_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(writer_module, "_active_qemu_process_owners", return_value={(4242, "other-vm")}):
+                self.refused_with_zero_writes(directory, "not owned by the configured account")
+
+    def test_account_running_process_that_agrees_is_recorded_as_agreed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, client, writer = self.run_writer(directory)
+            manifest = json.loads(Path(result["manifest_path"]).read_text())
+            self.assertEqual(manifest["account_source"]["process_agreement"], "agreed")
+            self.assertEqual(manifest["account_source"]["source"], "qemu.conf")
+
+    def test_account_no_running_process_is_recorded_and_proceeds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(writer_module, "_active_qemu_process_owners", return_value=set()):
+                result, client, writer = self.run_writer(directory)
+            manifest = json.loads(Path(result["manifest_path"]).read_text())
+            self.assertEqual(manifest["account_source"]["process_agreement"], "none running")
 
     def test_staged_iso_failure_aborts_before_zvol_and_vm(self):
         with tempfile.TemporaryDirectory() as directory:
