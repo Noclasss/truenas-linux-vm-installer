@@ -792,6 +792,32 @@ class DesktopLiveWriterTests(unittest.TestCase):
                     if mode == "before":
                         self.assertEqual(target.read_bytes(), b"pre-existing protected file")
 
+    def test_staged_media_owner_group_and_mode_match_service_account(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, client, writer = self.run_writer(directory)
+            manifest = json.loads(Path(result["manifest_path"]).read_text())
+            gid = pwd.getpwuid(os.geteuid()).pw_gid
+            self.assertEqual(len(manifest["files"]), 2)
+            for row in manifest["files"]:
+                info = Path(row["path"]).lstat()
+                self.assertEqual(info.st_uid, os.geteuid(), row["kind"])
+                self.assertEqual(info.st_gid, gid, row["kind"])
+                self.assertEqual(stat.S_IMODE(info.st_mode), 0o600, row["kind"])  # no group/other bits
+                self.assertEqual((row["owner_uid"], row["owner_gid"], row["mode"]), (os.geteuid(), gid, "0600"))
+
+    def test_group_writable_staging_directory_refuses_before_zvol_and_vm(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, mountpoint = self.writer(directory)
+            os.chmod(mountpoint, 0o770)
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint), \
+                 self.assertRaises(DesktopWriterError):
+                writer.create(confirmation=self.confirmation(writer))
+            self.assert_no_zvol_or_vm(client)
+            manifest = json.loads((Path(directory) / "operation.json").read_text())
+            self.assertEqual(manifest["status"], "reconcile_required")
+            self.assertEqual(list(mountpoint.iterdir()), [])  # nothing staged into an untrusted directory
+
     def test_vm_create_ambiguous_outcomes_reconcile_vm_and_implicit_display_read_only(self):
         for mode in ("before", "after"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
