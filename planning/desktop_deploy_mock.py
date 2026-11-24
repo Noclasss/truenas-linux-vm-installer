@@ -4,7 +4,7 @@ This module deliberately has no TrueNAS adapter, subprocesses, or filesystem wri
 It exercises sequencing against an injected fake. It cannot deploy a real VM.
 """
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Callable, Protocol
 
 if __package__:
     from .ubuntu_desktop import STAGING_RESERVE_BYTES
@@ -54,11 +54,13 @@ def resource_names(request: DesktopRequest) -> tuple[str, str]:
     })
     return plan["vm"]["name"], plan["storage"]["disk"]
 
-def rehearse(request: DesktopRequest, backend: Backend, *, confirmation: str = "") -> tuple[str, ...]:
+def rehearse(request: DesktopRequest, backend: Backend, *, confirmation: str = "",
+             verify_staged_media: Callable[[], None] | None = None) -> tuple[str, ...]:
     """Exercise an ordered creation sequence on an injected fake only.
 
     No automatic rollback: ambiguous results must be reconciled manually.
     Starting the installer is explicit and the finished desktop is NOT started.
+    verify_staged_media re-checks the staged ISO bytes immediately before the CDROM attach.
     """
     if type(backend) is not FakeBackend:
         raise DeploymentRefused("only the built-in offline fake is permitted")
@@ -69,6 +71,8 @@ def rehearse(request: DesktopRequest, backend: Backend, *, confirmation: str = "
     backend.preflight(request)
     if backend.exists("vm", vm_name) or backend.exists("disk", disk_name):
         raise DeploymentRefused("VM or disk already exists")
+    if verify_staged_media is None:
+        raise DeploymentRefused("staged ISO verification required before CDROM attach")
     if confirmation != "CREATE":
         raise DeploymentRefused("exact CREATE confirmation required")
     events = []
@@ -97,6 +101,8 @@ def rehearse(request: DesktopRequest, backend: Backend, *, confirmation: str = "
         events.append("vm-created")
         if vm != vm_name or not backend.exists("vm", vm_name):
             raise DeploymentRefused("VM read-back mismatch")
+        verify_staged_media()
+        events.append("staged-iso-verified")
         backend.attach_installer(vm)
         events.append("installer-attached")
         backend.attach_seed(vm)

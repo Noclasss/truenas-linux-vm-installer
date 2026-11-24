@@ -5,13 +5,15 @@ from planning.desktop_deploy_mock import DeploymentRefused, DesktopRequest, Fake
 from planning.desktop_finalize import expected_media, finish_installation, verify_media_readback
 from planning.desktop_write_contracts import build_desktop_write_intents, load_reviewed_desktop_fixture
 
+PASS_VERIFY = lambda: None  # test-only fake verifier; production code has no default
+
 REQUEST = DesktopRequest("desktop-test", "testpool", "br0", 2, 6144, 32)
 
 
 def installed_backend(**kwargs):
     """A fake that completed the create sequence and whose guest powered off."""
     backend = FakeBackend(**kwargs)
-    rehearse(REQUEST, backend, confirmation="CREATE")
+    rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
     return backend
 
 

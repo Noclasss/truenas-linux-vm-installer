@@ -11,6 +11,8 @@ from planning.desktop_write_contracts import (
 )
 from planning.installer_core.schema import validate_method_request
 
+PASS_VERIFY = lambda: None  # test-only fake verifier; production code has no default
+
 REQUEST = DesktopRequest("desktop-test", "testpool", "br0", 2, 6144, 32)
 _GIB = 1024**3
 
@@ -104,7 +106,7 @@ class DesktopWriteContractTests(unittest.TestCase):
         broken["methods"].pop("vm.device.create")
         backend = FakeBackend(contract_fixture=broken)
         with self.assertRaisesRegex(DeploymentRefused, "offline fixture rejected"):
-            rehearse(REQUEST, backend, confirmation="CREATE")
+            rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
         self.assertEqual(backend.events, ["preflight"])
         self.assertEqual(backend.datasets, {})
         self.assertEqual(backend.resources["vm"], set())
@@ -112,14 +114,14 @@ class DesktopWriteContractTests(unittest.TestCase):
 
     def test_fake_rehearsal_retains_reviewed_write_intents(self):
         backend = FakeBackend()
-        rehearse(REQUEST, backend, confirmation="CREATE")
+        rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
         self.assertEqual(len(backend.write_intents), 9)
         self.assertEqual(backend.write_intents[-1][0], "vm.start")
         self.assertEqual(backend.write_intents[-1][1][1], {"overcommit": False})
 
     def test_fake_preexisting_parent_does_not_propose_recreation(self):
         backend = FakeBackend(datasets={"testpool/linux-vms": "FILESYSTEM"})
-        rehearse(REQUEST, backend, confirmation="CREATE")
+        rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
         self.assertFalse(any(
             method == "pool.dataset.create" and args[0]["name"] == "testpool/linux-vms"
             for method, args in backend.write_intents
