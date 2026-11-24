@@ -11,17 +11,19 @@ from planning.desktop_ownership import (
     OwnershipError, PersistentFakeBackend, inspect_recovery, rehearse_persistent,
 )
 
+PASS_VERIFY = lambda: None  # test-only fake verifier; production code has no default
+
 REQUEST = DesktopRequest("desktop-test", "testpool", "br0", 2, 6144, 32)
 OPERATIONS = (
     "dataset:testpool/linux-vms",
     "dataset:testpool/linux-vms/desktop-test",
     "zvol:testpool/linux-vms/desktop-test/disk0",
     "vm:desktop-test",
+    "device:desktop-test:display",
     "device:desktop-test:disk",
     "device:desktop-test:installer",
     "device:desktop-test:seed",
     "device:desktop-test:nic",
-    "device:desktop-test:display",
 )
 
 
@@ -33,7 +35,7 @@ class DesktopOwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             backend = PersistentFakeBackend()
             path = self.path(directory)
-            installation_id = rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+            installation_id = rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
             data = json.loads(path.read_text())
             self.assertEqual(data["installation_id"], installation_id)
             self.assertEqual(data["vm_name"], REQUEST.name)
@@ -54,7 +56,7 @@ class DesktopOwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             backend = PersistentFakeBackend(datasets={"testpool/linux-vms": "FILESYSTEM"})
             path = self.path(directory)
-            rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+            rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
             data = json.loads(path.read_text())
             self.assertFalse(any(row["identifier"] == "testpool/linux-vms" for row in data["resources"]))
             shared = next(row for row in inspect_recovery(path, backend).resources if row["identifier"] == "testpool/linux-vms")
@@ -70,7 +72,7 @@ class DesktopOwnershipTests(unittest.TestCase):
                     })
                     path = self.path(directory)
                     with self.assertRaises(OwnershipError):
-                        rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+                        rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
                     data = json.loads(path.read_text())
                     self.assertEqual(data["status"], "reconcile_required")
                     self.assertIsNotNone(data["pending"])
@@ -93,7 +95,7 @@ class DesktopOwnershipTests(unittest.TestCase):
             with self.subTest(existing=backend.datasets or backend.vms), tempfile.TemporaryDirectory() as directory:
                 path = self.path(directory)
                 with self.assertRaises(DeploymentRefused):
-                    rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+                    rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
                 self.assertFalse(path.exists())
                 self.assertEqual(backend.operations, [])
 
@@ -102,11 +104,11 @@ class DesktopOwnershipTests(unittest.TestCase):
             backend = PersistentFakeBackend(fail_before=OPERATIONS[0])
             path = self.path(directory)
             with self.assertRaises(OwnershipError):
-                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
             original = path.read_bytes()
             before = backend.inventory()
             with self.assertRaises(OwnershipError):
-                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
             self.assertEqual(path.read_bytes(), original)
             self.assertEqual(backend.inventory(), before)
             self.assertEqual(backend.operations, [OPERATIONS[0]])
@@ -127,7 +129,7 @@ class DesktopOwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             backend = PersistentFakeBackend()
             path = self.path(directory)
-            rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+            rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
             os.chmod(path, 0o644)
             with self.assertRaisesRegex(OwnershipError, "private, trusted"):
                 inspect_recovery(path, backend)
@@ -136,7 +138,7 @@ class DesktopOwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             backend = PersistentFakeBackend()
             path = self.path(directory)
-            rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+            rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
             data = json.loads(path.read_text())
             data["installation_id"] = "00000000-0000-0000-0000-000000000000"
             path.write_text(json.dumps(data), encoding="utf-8")
@@ -150,7 +152,7 @@ class DesktopOwnershipTests(unittest.TestCase):
             backend = PersistentFakeBackend(fail_before=OPERATIONS[0])
             path = self.path(directory)
             with self.assertRaises(OwnershipError):
-                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
             backend.vms[5] = {"id": 5, "name": REQUEST.name, "disk": "unrelated"}
             # Recovery is read-only and reports a name collision even if no creation was acknowledged.
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -177,7 +179,7 @@ class DesktopOwnershipTests(unittest.TestCase):
                 backend = PersistentFakeBackend()
                 path = self.path(directory)
                 with patch.object(backend, method, side_effect=replacement), self.assertRaises(OwnershipError):
-                    rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+                    rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
                 data = json.loads(path.read_text())
                 self.assertEqual(data["status"], "reconcile_required")
                 self.assertIsNotNone(data["pending"])
@@ -198,7 +200,7 @@ class DesktopOwnershipTests(unittest.TestCase):
                 original(path, owner)
                 return "unrelated/dataset"
             with patch.object(backend, "create_parent", side_effect=wrong), self.assertRaises(OwnershipError):
-                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
             data = json.loads(path.read_text())
             self.assertEqual(data["resources"], [])
             self.assertEqual(data["pending"]["identifier"], "testpool/linux-vms")
@@ -209,7 +211,7 @@ class DesktopOwnershipTests(unittest.TestCase):
             with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
                 backend = PersistentFakeBackend()
                 path = self.path(directory)
-                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
                 vm_id = backend.vm_ids[REQUEST.name]
                 device = next(iter(backend.devices.values()))
                 if fault == "vm_disk":
@@ -234,7 +236,7 @@ class DesktopOwnershipTests(unittest.TestCase):
             with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
                 backend = PersistentFakeBackend()
                 path = self.path(directory)
-                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
                 data = json.loads(path.read_text())
                 if fault == "unplanned_dataset":
                     target = "testpool/unrelated"
@@ -259,7 +261,7 @@ class DesktopOwnershipTests(unittest.TestCase):
             with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
                 backend = PersistentFakeBackend()
                 path = self.path(directory)
-                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
                 data = json.loads(path.read_text())
                 if fault == "empty":
                     data["resources"] = []
@@ -292,7 +294,7 @@ class DesktopOwnershipTests(unittest.TestCase):
             backend = PersistentFakeBackend(fail_before=OPERATIONS[0])
             path = self.path(directory)
             with self.assertRaises(OwnershipError):
-                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE")
+                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
             data = json.loads(path.read_text())
             data["pending"]["identifier"] = "testpool/unrelated"
             path.write_text(json.dumps(data), encoding="utf-8")

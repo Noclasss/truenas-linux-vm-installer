@@ -37,6 +37,7 @@ class Backend(Protocol):
     def attach_installer(self, vm: str) -> None: ...
     def attach_seed(self, vm: str) -> None: ...
     def attach_display(self, vm: str) -> None: ...
+    def verify_display(self, vm: str) -> bool: ...
     def start(self, vm: str) -> None: ...
     def status(self, vm: str) -> str: ...
 
@@ -101,14 +102,17 @@ def rehearse(request: DesktopRequest, backend: Backend, *, confirmation: str = "
         events.append("vm-created")
         if vm != vm_name or not backend.exists("vm", vm_name):
             raise DeploymentRefused("VM read-back mismatch")
+        backend.attach_display(vm)
+        events.append("display-device-created")
+        if backend.verify_display(vm) is not True:
+            raise DeploymentRefused("explicit DISPLAY device failed read-back")
+        events.append("display-device-verified")
         verify_staged_media()
         events.append("staged-iso-verified")
         backend.attach_installer(vm)
         events.append("installer-attached")
         backend.attach_seed(vm)
         events.append("seed-attached")
-        backend.attach_display(vm)
-        events.append("display-attached")
         backend.start(vm)
         events.append("installer-start-requested")
         if backend.status(vm) != "RUNNING":
@@ -142,6 +146,7 @@ class FakeBackend:
         self.events = []
         self.fail_at = fail_at
         self.states = {}
+        self.devices = {}
         self.pools = pools if pools is not None else {
             "testpool": {"healthy": True, "available_bytes": 100 * _GIB}
         }
@@ -287,6 +292,7 @@ class FakeBackend:
             raise RuntimeError("missing disk")
         self.resources["vm"].add(request.name)
         self.states[request.name] = "STOPPED"
+        self.devices[request.name] = []
         self.vm_disks[request.name] = disk
         self.media_devices[request.name] = [{"dtype": "DISK", "path": f"/dev/zvol/{disk}"}]
         return request.name
@@ -308,6 +314,17 @@ class FakeBackend:
 
     def attach_display(self, vm):
         self._record("attach_display")
+        self.devices[vm] = [{"id": 1, "attributes": {"dtype": "DISPLAY"}}]
+
+    def verify_display(self, vm):
+        self.events.append("verify_display")
+        devices = self.devices.get(vm, [])
+        return sum(
+            isinstance(device, dict)
+            and isinstance(device.get("attributes"), dict)
+            and device["attributes"].get("dtype") == "DISPLAY"
+            for device in devices
+        ) == 1
 
     def start(self, vm):
         self._record("start")

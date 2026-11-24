@@ -28,8 +28,8 @@ class DesktopDeployMockTests(unittest.TestCase):
         steps = rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
         self.assertEqual(steps[-1], "installer-running")
         self.assertEqual(backend.events, [
-            "preflight", "create_parent_datasets", "create_disk", "create_vm", "attach_installer",
-            "attach_seed", "attach_display", "start", "status",
+            "preflight", "create_parent_datasets", "create_disk", "create_vm", "attach_display",
+            "verify_display", "attach_installer", "attach_seed", "start", "status",
         ])
         shared_parent = "testpool/linux-vms"
         vm_parent = "testpool/linux-vms/desktop-test"

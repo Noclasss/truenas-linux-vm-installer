@@ -120,6 +120,13 @@ def build_desktop_write_intents(
         }]),
         ("vm.device.create", [{
             "vm": vm_id, "attributes": {
+                "dtype": "DISPLAY", "type": "SPICE", "bind": "127.0.0.1",
+                "web": True, "wait": False, "resolution": "1024x768",
+                "port": None, "web_port": None, "password": None,
+            },
+        }]),
+        ("vm.device.create", [{
+            "vm": vm_id, "attributes": {
                 "dtype": "DISK", "path": f"/dev/zvol/{disk}",
                 "type": "VIRTIO", "create_zvol": False,
             },

@@ -34,7 +34,7 @@ class DesktopWriteContractTests(unittest.TestCase):
         intents = self.build()
         self.assertEqual([method for method, _ in intents], [
             "pool.dataset.create", "pool.dataset.create", "pool.dataset.create",
-            "vm.create", "vm.device.create", "vm.device.create",
+            "vm.create", "vm.device.create", "vm.device.create", "vm.device.create",
             "vm.device.create", "vm.device.create", "vm.start",
         ])
         for method, params in intents:
@@ -56,12 +56,16 @@ class DesktopWriteContractTests(unittest.TestCase):
         self.assertIs(vm["autostart"], False)
         self.assertIs(vm["ensure_display_device"], True)
         self.assertEqual(
-            [args[0]["attributes"]["dtype"] for _, args in intents[4:8]],
-            ["DISK", "CDROM", "RAW", "NIC"],
+            [args[0]["attributes"]["dtype"] for _, args in intents[4:9]],
+            ["DISPLAY", "DISK", "CDROM", "RAW", "NIC"],
         )
-        self.assertEqual(intents[5][1][0]["attributes"]["path"],
-                         "/mnt/testpool/linux-vms/desktop-test/ubuntu-installer.iso")
+        display = intents[4][1][0]["attributes"]
+        self.assertEqual(display["type"], "SPICE")
+        self.assertEqual(display["bind"], "127.0.0.1")
+        self.assertIsNone(display["password"])
         self.assertEqual(intents[6][1][0]["attributes"]["path"],
+                         "/mnt/testpool/linux-vms/desktop-test/ubuntu-installer.iso")
+        self.assertEqual(intents[7][1][0]["attributes"]["path"],
                          "/mnt/testpool/linux-vms/desktop-test/cidata.img")
         self.assertEqual(intents[-1], ("vm.start", [17, {"overcommit": False}]))
 
@@ -115,7 +119,7 @@ class DesktopWriteContractTests(unittest.TestCase):
     def test_fake_rehearsal_retains_reviewed_write_intents(self):
         backend = FakeBackend()
         rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
-        self.assertEqual(len(backend.write_intents), 9)
+        self.assertEqual(len(backend.write_intents), 10)
         self.assertEqual(backend.write_intents[-1][0], "vm.start")
         self.assertEqual(backend.write_intents[-1][1][1], {"overcommit": False})
 
