@@ -26,7 +26,7 @@ if __package__:
     from . import ubuntu_desktop as desktop
     from .desktop_integrity import (
         DesktopIntegrityError, seed_pin_from_file, valid_seed_pin, verify_desktop_artifacts,
-        verify_staged_seed,
+        verify_staged_iso, verify_staged_seed,
     )
     from .desktop_catalogue import verify_desktop_source_id
     from .desktop_manifest import ManifestInspectionError, find_prior_target_manifest, make_target_key
@@ -47,7 +47,7 @@ else:
     import ubuntu_desktop as desktop
     from desktop_integrity import (
         DesktopIntegrityError, seed_pin_from_file, valid_seed_pin, verify_desktop_artifacts,
-        verify_staged_seed,
+        verify_staged_iso, verify_staged_seed,
     )
     from desktop_catalogue import verify_desktop_source_id
     from desktop_manifest import ManifestInspectionError, find_prior_target_manifest, make_target_key
@@ -648,14 +648,14 @@ class DesktopCreateOnlyWriter:
             intended_resources.append({"kind": "dataset", "identifier": shared_parent, "creation_method": "pool.dataset.create"})
         intended_resources.extend((
             {"kind": "dataset", "identifier": vm_dataset, "creation_method": "pool.dataset.create"},
+            {"kind": "staged_file", "identifier": "ubuntu-installer.iso", "creation_method": "filesystem.stage"},
+            {"kind": "staged_file", "identifier": "cidata.img", "creation_method": "filesystem.stage"},
             {"kind": "zvol", "identifier": zvol, "creation_method": "pool.dataset.create"},
             {"kind": "vm", "identifier": self.request.vm_name, "creation_method": "vm.create"},
             {"kind": "device", "identifier": f"{self.request.vm_name}:display", "creation_method": "vm.device.create"},
             {"kind": "device", "identifier": f"{self.request.vm_name}:disk", "creation_method": "vm.device.create"},
             {"kind": "device", "identifier": f"{self.request.vm_name}:installer", "creation_method": "vm.device.create"},
             {"kind": "device", "identifier": f"{self.request.vm_name}:seed", "creation_method": "vm.device.create"},
-            {"kind": "staged_file", "identifier": "ubuntu-installer.iso", "creation_method": "filesystem.stage"},
-            {"kind": "staged_file", "identifier": "cidata.img", "creation_method": "filesystem.stage"},
         ))
         manifest = {
             "format": _FORMAT, "run_id": run_id, "status": "preparing",
@@ -746,7 +746,6 @@ class DesktopCreateOnlyWriter:
         if not shared_existed:
             create_dataset(shared_parent, "FILESYSTEM")
         dataset_row = create_dataset(vm_dataset, "FILESYSTEM")
-        create_dataset(zvol, "VOLUME", self.request.disk_gib * 1024**3)
         try:
             mountpoint = _exact_mountpoint(dataset_row.get("mountpoint"), self.request.pool_name)
             ensure_trusted_directory_chain(mountpoint, "Desktop staging dataset")
@@ -817,6 +816,13 @@ class DesktopCreateOnlyWriter:
 
         stage(self.artifacts.iso, staged_iso, desktop.ARTIFACT_SIZE_BYTES, iso_sha, "ISO")
         stage(self.artifacts.seed, staged_seed, self.seed_pin["size_bytes"], self.seed_pin["sha256"], "seed")
+        # Re-verify both staged copies before any zvol or VM write; a failure leaves only the staging dataset.
+        try:
+            verify_staged_iso(staged_iso)
+            verify_staged_seed(staged_seed, self.seed_pin)
+        except DesktopIntegrityError as exc:
+            stop_ambiguous("staged media failed pre-create verification; no zvol or VM was created", exc)
+        create_dataset(zvol, "VOLUME", self.request.disk_gib * 1024**3)
 
         def query_vm(vm_id: int) -> dict[str, Any]:
             fields = ["id", "name", "memory", "cores", "vcpus", "threads", "bootloader", "enable_secure_boot", "autostart", "ensure_display_device", "display_available", "devices", "status"]

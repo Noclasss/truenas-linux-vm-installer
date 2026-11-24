@@ -64,6 +64,20 @@ class DesktopOwnershipTests(unittest.TestCase):
             self.assertTrue(shared["exists"])
             self.assertFalse(shared["owned"])
 
+    def test_media_check_failure_leaves_only_datasets_no_zvol_or_vm(self):
+        def bad_media():
+            raise DeploymentRefused("staged media changed")
+        with tempfile.TemporaryDirectory() as directory:
+            backend = PersistentFakeBackend()
+            path = self.path(directory)
+            with self.assertRaises((OwnershipError, DeploymentRefused)):
+                rehearse_persistent(REQUEST, backend, manifest_path=path, confirmation="CREATE",
+                                    verify_staged_media=bad_media, seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
+            data = json.loads(path.read_text())
+            self.assertEqual(data["status"], "reconcile_required")
+            self.assertEqual({row["kind"] for row in data["resources"]}, {"dataset"})
+            self.assertIsNone(data["vm_id"])
+
     def test_failure_before_and_lost_response_after_every_resource_create(self):
         for when in ("before", "after"):
             for operation in OPERATIONS:

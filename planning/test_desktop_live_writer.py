@@ -653,14 +653,35 @@ class DesktopLiveWriterTests(unittest.TestCase):
         self.assertEqual(seed_attaches, [])
         return client
 
-    def test_seed_pin_mismatch_aborts_with_no_seed_attach(self):
+    def test_seed_pin_mismatch_aborts_before_zvol_and_vm(self):
         with tempfile.TemporaryDirectory() as directory:
             mismatch = patch.object(writer_module, "verify_staged_seed",
                                     side_effect=writer_module.DesktopIntegrityError("pin mismatch"))
             client = self._refused_before_seed_attach(directory, patches=[mismatch])
-            self.assertTrue(any(m == "vm.device.create" for m, _ in client.writes))  # disk/CDROM attached first
+            self.assert_no_zvol_or_vm(client)
             manifest = json.loads((Path(directory) / "operation.json").read_text())
             self.assertEqual(manifest["status"], "reconcile_required")
+
+    def test_staged_iso_failure_aborts_before_zvol_and_vm(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer, client, mountpoint = self.writer(directory)
+            with patch.object(writer, "_require_root", return_value=None), \
+                 patch.object(writer_module, "_exact_mountpoint", return_value=mountpoint), \
+                 patch.object(writer_module, "verify_staged_iso",
+                              side_effect=writer_module.DesktopIntegrityError("iso changed")), \
+                 self.assertRaisesRegex(DesktopWriterError, "reconciliation"):
+                writer.create(confirmation=self.confirmation(writer))
+            self.assert_no_zvol_or_vm(client)
+            manifest = json.loads((Path(directory) / "operation.json").read_text())
+            self.assertEqual(manifest["status"], "reconcile_required")
+            self.assertEqual({row["kind"] for row in manifest["resources"]}, {"dataset"})
+
+    def assert_no_zvol_or_vm(self, client):
+        methods = [method for method, _ in client.writes]
+        self.assertNotIn("vm.create", methods)
+        self.assertNotIn("vm.device.create", methods)
+        volumes = [params[0] for method, params in client.writes if method == "pool.dataset.create" and params[0].get("type") == "VOLUME"]
+        self.assertEqual(volumes, [])
 
     def test_seed_wrong_size_aborts_before_any_write(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -759,8 +780,8 @@ class DesktopLiveWriterTests(unittest.TestCase):
                             with self.assertRaises(DesktopWriterError):
                                 writer.create(confirmation=self.confirmation(writer))
                     self.assertEqual([method for method, _ in client.writes], [
-                        "pool.dataset.create", "pool.dataset.create", "pool.dataset.create",
-                    ])
+                        "pool.dataset.create", "pool.dataset.create",
+                    ])  # staging fails before the zvol and VM are created
                     manifest = json.loads((Path(directory) / "operation.json").read_text())
                     self.assertEqual(manifest["status"], "reconcile_required")
                     self.assertEqual(manifest["pending"]["method"], "filesystem.stage")

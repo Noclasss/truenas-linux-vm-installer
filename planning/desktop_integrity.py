@@ -202,9 +202,9 @@ def verify_staged_seed(path: Path, pin: object) -> None:
 
 
 def verify_staged_iso(path: Path) -> None:
-    """Re-hash a staged ISO copy against the pinned size and SHA-256 before attach.
+    """Re-hash a staged ISO copy against the pinned size and SHA-256.
 
-    shortcut: no live writer calls this yet; the offline fake cannot read host files, so wire it in before the first CDROM attach.
+    Called by the live writer before any zvol or VM write (and by the offline fake before CDROM attach).
     """
     try:
         _hash_image(Path(path), desktop.ARTIFACT_SIZE_BYTES, desktop.ARTIFACT_SHA256)
