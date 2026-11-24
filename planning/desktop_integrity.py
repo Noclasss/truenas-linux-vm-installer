@@ -147,7 +147,7 @@ def _hash_image(path: Path, expected_size: int, expected_digest: str) -> None:
     with _open_regular(path) as stream:
         before = os.fstat(stream.fileno())
         if before.st_size != expected_size:
-            raise DesktopIntegrityError("ISO size disagrees with the checked-in Desktop pin")
+            raise DesktopIntegrityError("image size disagrees with the pinned size")
         digest = hashlib.sha256()
         total = 0
         while True:
@@ -156,15 +156,48 @@ def _hash_image(path: Path, expected_size: int, expected_digest: str) -> None:
                 break
             total += len(chunk)
             if total > expected_size:
-                raise DesktopIntegrityError("ISO grew while being verified")
+                raise DesktopIntegrityError("image grew while being verified")
             digest.update(chunk)
         after = os.fstat(stream.fileno())
         identity = lambda info: (info.st_dev, info.st_ino, info.st_size,
                                  info.st_mtime_ns, info.st_ctime_ns)
         if identity(before) != identity(after) or total != expected_size:
-            raise DesktopIntegrityError("ISO changed while being verified")
+            raise DesktopIntegrityError("image changed while being verified")
         if digest.hexdigest() != expected_digest:
-            raise DesktopIntegrityError("ISO SHA-256 disagrees with the signed Desktop pin")
+            raise DesktopIntegrityError("image SHA-256 disagrees with the pinned digest")
+
+
+def valid_seed_pin(pin: object) -> bool:
+    """A seed pin is the build-time size and SHA-256 of the exact seed bytes."""
+    return (
+        isinstance(pin, dict)
+        and type(pin.get("size_bytes")) is int
+        and pin["size_bytes"] == desktop.SEED_MEDIA_SIZE_BYTES
+        and isinstance(pin.get("sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", pin["sha256"]) is not None
+    )
+
+
+def seed_pin_from_file(path: Path) -> dict[str, object]:
+    """Build-time pin: hash the exact seed bytes read through the safe opener."""
+    try:
+        with _open_regular(Path(path)) as stream:
+            data = stream.read(desktop.SEED_MEDIA_SIZE_BYTES + 1)
+    except OSError as exc:
+        raise DesktopIntegrityError("could not safely read seed image") from exc
+    if len(data) != desktop.SEED_MEDIA_SIZE_BYTES:
+        raise DesktopIntegrityError("seed image size disagrees with the fixed seed size")
+    return {"sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
+
+
+def verify_staged_seed(path: Path, pin: object) -> None:
+    """Re-hash the staged seed against its manifest pin before attach_seed."""
+    if not valid_seed_pin(pin):
+        raise DesktopIntegrityError("seed pin is missing or malformed")
+    try:
+        _hash_image(Path(path), pin["size_bytes"], pin["sha256"])
+    except OSError as exc:
+        raise DesktopIntegrityError("could not safely read staged seed") from exc
 
 
 def verify_staged_iso(path: Path) -> None:

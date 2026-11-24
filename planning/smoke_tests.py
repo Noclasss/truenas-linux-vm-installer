@@ -59,14 +59,14 @@ def exercise_desktop(root: Path) -> dict:
     backend = PersistentFakeBackend()
     manifest = root / "complete.json"
     rehearse_persistent(request, backend, manifest_path=manifest, confirmation="CREATE",
-                           verify_staged_media=lambda: None)  # offline fake: no staged bytes exist to hash
+                           verify_staged_media=lambda: None, seed_pin={"sha256": "0" * 64, "size_bytes": 2 * 1024 * 1024}, verify_seed=lambda: None)  # offline fake: no staged bytes exist to hash
     report = inspect_recovery(manifest, backend)
     require(not report.attention and len(report.resources) == 9, "complete rehearsal did not reconcile")
     require(not report.can_continue and not report.can_delete, "recovery permits a live action")
     failed = PersistentFakeBackend(lose_response_after="vm:" + request.name)
     pending = root / "interrupted.json"
     try:
-        rehearse_persistent(request, failed, manifest_path=pending, confirmation="CREATE", verify_staged_media=lambda: None)  # offline fake: no staged bytes exist to hash
+        rehearse_persistent(request, failed, manifest_path=pending, confirmation="CREATE", verify_staged_media=lambda: None, seed_pin={"sha256": "0" * 64, "size_bytes": 2 * 1024 * 1024}, verify_seed=lambda: None)  # offline fake: no staged bytes exist to hash
     except OwnershipError:
         pass
     else:

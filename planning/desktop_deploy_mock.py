@@ -7,8 +7,10 @@ from dataclasses import dataclass
 from typing import Callable, Protocol
 
 if __package__:
+    from .desktop_integrity import valid_seed_pin
     from .ubuntu_desktop import STAGING_RESERVE_BYTES
 else:
+    from desktop_integrity import valid_seed_pin
     from ubuntu_desktop import STAGING_RESERVE_BYTES
 
 _GIB = 1024**3
@@ -56,7 +58,9 @@ def resource_names(request: DesktopRequest) -> tuple[str, str]:
     return plan["vm"]["name"], plan["storage"]["disk"]
 
 def rehearse(request: DesktopRequest, backend: Backend, *, confirmation: str = "",
-             verify_staged_media: Callable[[], None] | None = None) -> tuple[str, ...]:
+             verify_staged_media: Callable[[], None] | None = None,
+             seed_pin: dict | None = None,
+             verify_seed: Callable[[], None] | None = None) -> tuple[str, ...]:
     """Exercise an ordered creation sequence on an injected fake only.
 
     No automatic rollback: ambiguous results must be reconciled manually.
@@ -74,6 +78,8 @@ def rehearse(request: DesktopRequest, backend: Backend, *, confirmation: str = "
         raise DeploymentRefused("VM or disk already exists")
     if verify_staged_media is None:
         raise DeploymentRefused("staged ISO verification required before CDROM attach")
+    if verify_seed is None or not valid_seed_pin(seed_pin):
+        raise DeploymentRefused("seed pin and verification required before seed attach")
     if confirmation != "CREATE":
         raise DeploymentRefused("exact CREATE confirmation required")
     events = []
@@ -109,6 +115,8 @@ def rehearse(request: DesktopRequest, backend: Backend, *, confirmation: str = "
         events.append("display-device-verified")
         verify_staged_media()
         events.append("staged-iso-verified")
+        verify_seed()
+        events.append("staged-seed-verified")
         backend.attach_installer(vm)
         events.append("installer-attached")
         backend.attach_seed(vm)

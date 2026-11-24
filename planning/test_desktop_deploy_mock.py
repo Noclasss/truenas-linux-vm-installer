@@ -12,6 +12,7 @@ from planning.desktop_deploy_mock import (
 from planning.desktop_integrity import verify_staged_iso
 
 PASS_VERIFY = lambda: None  # test-only fake verifier; production code has no default
+PASS_PIN = {"sha256": "0" * 64, "size_bytes": 2 * 1024 * 1024}  # test-only seed pin; production has no default
 
 REQUEST = DesktopRequest("desktop-test", "testpool", "br0", 2, 6144, 32)
 
@@ -25,7 +26,7 @@ class DesktopDeployMockTests(unittest.TestCase):
 
     def test_success_sequence(self):
         backend = FakeBackend()
-        steps = rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
+        steps = rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY, seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
         self.assertEqual(steps[-1], "installer-running")
         self.assertEqual(backend.events, [
             "preflight", "create_parent_datasets", "create_disk", "create_vm", "attach_display",
@@ -43,13 +44,13 @@ class DesktopDeployMockTests(unittest.TestCase):
         backend = FakeBackend()
         backend.resources["vm"].add("desktop-test")
         with self.assertRaises(DeploymentRefused):
-            rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
+            rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY, seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
         self.assertEqual(backend.events, ["preflight"])
 
     def test_partial_failure_does_not_auto_delete(self):
         backend = FakeBackend(fail_at="attach_seed")
         with self.assertRaisesRegex(DeploymentRefused, "reconcile resources manually"):
-            rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
+            rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY, seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
         self.assertIn("desktop-test", backend.resources["vm"])
         self.assertEqual(backend.states["desktop-test"], "STOPPED")
 
@@ -57,13 +58,13 @@ class DesktopDeployMockTests(unittest.TestCase):
         class RealishBackend(FakeBackend):
             pass
         with self.assertRaisesRegex(DeploymentRefused, "offline fake"):
-            rehearse(REQUEST, RealishBackend(), confirmation="CREATE", verify_staged_media=PASS_VERIFY)
+            rehearse(REQUEST, RealishBackend(), confirmation="CREATE", verify_staged_media=PASS_VERIFY, seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
 
     def test_invalid_request_cannot_create(self):
         backend = FakeBackend()
         bad = DesktopRequest("bad/name", "testpool", "br0", 2, 6144, 32)
         with self.assertRaisesRegex(DeploymentRefused, "offline planner rejected"):
-            rehearse(bad, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
+            rehearse(bad, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY, seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
         self.assertEqual(backend.events, [])
         self.assertFalse(backend.resources["vm"])
 
@@ -76,7 +77,7 @@ class DesktopDeployMockTests(unittest.TestCase):
         for backend, message in cases:
             with self.subTest(message=message):
                 with self.assertRaisesRegex(DeploymentRefused, message):
-                    rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
+                    rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY, seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
                 self.assertEqual(backend.events, ["preflight"])
                 self.assertFalse(backend.resources["vm"])
                 self.assertFalse(backend.resources["disk"])
@@ -93,7 +94,7 @@ class DesktopDeployMockTests(unittest.TestCase):
             backend = FakeBackend(pools={"testpool": pool})
             with self.subTest(pool=pool):
                 with self.assertRaisesRegex(DeploymentRefused, message):
-                    rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
+                    rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY, seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
                 self.assertEqual(backend.events, ["preflight"])
                 self.assertFalse(backend.resources["vm"])
                 self.assertFalse(backend.resources["disk"])
@@ -107,7 +108,7 @@ class DesktopDeployMockTests(unittest.TestCase):
         for backend, message in cases:
             with self.subTest(message=message):
                 with self.assertRaisesRegex(DeploymentRefused, message):
-                    rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
+                    rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY, seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
                 self.assertEqual(backend.events, ["preflight"])
                 self.assertFalse(backend.resources["vm"])
                 self.assertFalse(backend.resources["disk"])
@@ -115,7 +116,7 @@ class DesktopDeployMockTests(unittest.TestCase):
     def test_preflight_refuses_existing_target_dataset(self):
         backend = FakeBackend(datasets={resource_names(REQUEST)[1]: "VOLUME"})
         with self.assertRaisesRegex(DeploymentRefused, "offline planner rejected.*storage path"):
-            rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
+            rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY, seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
         self.assertEqual(backend.events, ["preflight"])
         self.assertFalse(backend.resources["vm"])
         self.assertFalse(backend.resources["disk"])
@@ -123,7 +124,7 @@ class DesktopDeployMockTests(unittest.TestCase):
     def test_existing_shared_filesystem_is_reused_without_claiming_ownership(self):
         shared_parent = "testpool/linux-vms"
         backend = FakeBackend(datasets={shared_parent: "FILESYSTEM"})
-        rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
+        rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY, seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
         self.assertEqual(backend.datasets[shared_parent], "FILESYSTEM")
         self.assertNotIn(shared_parent, backend.owned_datasets)
         self.assertEqual(
@@ -135,7 +136,7 @@ class DesktopDeployMockTests(unittest.TestCase):
         shared_parent = "testpool/linux-vms"
         backend = FakeBackend(datasets={shared_parent: "VOLUME"})
         with self.assertRaisesRegex(DeploymentRefused, "shared parent is not a filesystem"):
-            rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY)
+            rehearse(REQUEST, backend, confirmation="CREATE", verify_staged_media=PASS_VERIFY, seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
         self.assertEqual(backend.events, ["preflight"])
         self.assertEqual(backend.datasets, {shared_parent: "VOLUME"})
         self.assertEqual(backend.owned_datasets, set())
@@ -161,7 +162,7 @@ class StagedIsoGateTests(unittest.TestCase):
                 patch.object(self.mod.desktop, "ARTIFACT_SHA256", digest):
             verify = lambda: verify_staged_iso(path or self.iso)
             return backend, rehearse(REQUEST, backend, confirmation="CREATE",
-                                     verify_staged_media=verify)
+                                     verify_staged_media=verify, seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
 
     def test_match_passes_and_attaches(self):
         backend, steps = self.run_rehearsal()
@@ -173,7 +174,7 @@ class StagedIsoGateTests(unittest.TestCase):
         with patch.object(self.mod.desktop, "ARTIFACT_SIZE_BYTES", len(self.DATA) + 1), \
                 self.assertRaises(DeploymentRefused):
             rehearse(REQUEST, backend, confirmation="CREATE",
-                     verify_staged_media=lambda: verify_staged_iso(self.iso))
+                     verify_staged_media=lambda: verify_staged_iso(self.iso), seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
         self.assertNotIn("attach_installer", backend.events)
 
     def test_wrong_sha256_aborts_before_attach(self):
@@ -182,7 +183,7 @@ class StagedIsoGateTests(unittest.TestCase):
                 patch.object(self.mod.desktop, "ARTIFACT_SHA256", "0" * 64), \
                 self.assertRaises(DeploymentRefused):
             rehearse(REQUEST, backend, confirmation="CREATE",
-                     verify_staged_media=lambda: verify_staged_iso(self.iso))
+                     verify_staged_media=lambda: verify_staged_iso(self.iso), seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
         self.assertNotIn("attach_installer", backend.events)
 
     def test_missing_file_aborts_before_attach(self):
@@ -190,7 +191,7 @@ class StagedIsoGateTests(unittest.TestCase):
         missing = Path(self.tmp.name) / "absent.iso"
         with self.assertRaises(DeploymentRefused):
             rehearse(REQUEST, backend, confirmation="CREATE",
-                     verify_staged_media=lambda: verify_staged_iso(missing))
+                     verify_staged_media=lambda: verify_staged_iso(missing), seed_pin=PASS_PIN, verify_seed=PASS_VERIFY)
         self.assertNotIn("attach_installer", backend.events)
 
     def test_missing_verifier_refused_before_any_write(self):

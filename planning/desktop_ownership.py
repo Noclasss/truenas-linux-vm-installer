@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 if __package__:
+    from .desktop_integrity import valid_seed_pin
     from .desktop_deploy_mock import (
         DeploymentRefused, DesktopRequest, FakeBackend, resource_names,
     )
@@ -22,6 +23,7 @@ if __package__:
         write_private_new_file,
     )
 else:
+    from desktop_integrity import valid_seed_pin
     from desktop_deploy_mock import (
         DeploymentRefused, DesktopRequest, FakeBackend, resource_names,
     )
@@ -221,6 +223,8 @@ def rehearse_persistent(
     *, manifest_path: Path,
     confirmation: str,
     verify_staged_media=None,
+    seed_pin=None,
+    verify_seed=None,
 ) -> str:
     """Run the fake sequence, journaling intent before each resource creation."""
     if type(backend) is not PersistentFakeBackend:
@@ -240,6 +244,8 @@ def rehearse_persistent(
         raise DeploymentRefused("exact CREATE confirmation required")
     if verify_staged_media is None:
         raise DeploymentRefused("staged ISO verification required before CDROM attach")
+    if verify_seed is None or not valid_seed_pin(seed_pin):
+        raise DeploymentRefused("seed pin and verification required before seed attach")
 
     vm_dataset = zvol.rpartition("/")[0]
     shared = vm_dataset.rpartition("/")[0]
@@ -256,6 +262,7 @@ def rehearse_persistent(
         "resources": [],
         "pending": None,
         "inventory_before": {"shared_parent_exists": backend.exists("dataset", shared)},
+        "seed_pin": dict(seed_pin),
     }
     path = Path(manifest_path)
     _save(path, manifest, create=True)
@@ -294,6 +301,7 @@ def rehearse_persistent(
         create("zvol", zvol, lambda: backend.create_volume(zvol, manifest["installation_id"]))
         create("vm", vm_name, lambda: backend.create_vm_record(vm_name, zvol, manifest["installation_id"]))
         verify_staged_media()
+        verify_seed()
         for kind in ("display", "disk", "installer", "seed", "nic"):
             create("device", f"{vm_name}:{kind}", lambda kind=kind: backend.attach(vm_name, kind, manifest["installation_id"]))
         manifest["status"] = "mock_complete_not_installed"
